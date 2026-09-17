@@ -1,5 +1,8 @@
 # go-drission
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.26.0-00ADD8.svg)](go.mod)
+
 用 **Go 标准写法**实现的浏览器自动化库，功能参考 Python 的 DrissionPage，但遵循 Go 的惯用法：
 `context.Context` 贯穿所有 I/O、错误如实返回不吞掉、超时与取消由调用方掌控。
 
@@ -241,3 +244,9 @@ for _, rec := range listener.Records() {
   `responseReceivedExtraInfo` 事件，当前未合并。
 - `Eval` 返回值按 JSON 解码：`string` / `float64` / `map[string]interface{}` /
   `[]interface{}` / `bool` / `nil`。
+
+---
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源，可自由用于个人与商业项目。
