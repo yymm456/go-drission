@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go-drission/chromium"
+	"github.com/yymm456/go-drission/chromium"
 	"log"
 	"time"
 )

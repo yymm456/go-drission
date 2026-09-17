@@ -7,12 +7,20 @@
 
 ---
 
+## 安装
+
+```bash
+go get github.com/yymm456/go-drission@latest
+```
+
+---
+
 ## 目录结构
 
 ```
 go-drission/
 ├── go.mod
-├── main_debug.go        示例 / 调试入口
+├── main.go        示例 / 调试入口
 └── chromium/
     ├── browser.go       Browser：连接、标签页管理、OpenPage
     ├── tab.go           Tab：导航、等待、点击、输入、读取、截图、Eval
@@ -55,7 +63,7 @@ import (
     "context"
     "log"
     "time"
-    "go-drission/chromium"
+    "github.com/yymm456/go-drission/chromium"
 )
 
 func main() {

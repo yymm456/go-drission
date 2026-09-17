@@ -1,4 +1,4 @@
-module go-drission
+module github.com/yymm456/go-drission
 
 go 1.26.0
 
