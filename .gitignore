@@ -1,0 +1,28 @@
+# 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+go-drission
+chrome-automation
+
+# 测试与覆盖率
+*.test
+*.out
+coverage.*
+
+# 调试残留
+*.bak
+*.tmp
+debug_*.png
+
+# Go 工作区
+go.work
+go.work.sum
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
