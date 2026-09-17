@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/yymm456/go-drission/chromium"
 	"log"
 	"time"
+
+	"github.com/yymm456/go-drission/chromium"
 )
 
 func main() {
