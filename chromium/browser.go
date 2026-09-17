@@ -6,10 +6,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
+
+// defaultCDPTimeout 是 browser 级 CDP 调用（创建/销毁隔离上下文、上下文内新建标签页等）
+// 在调用方 ctx 未设 deadline 时采用的默认超时，防止 Chrome 无响应导致永久阻塞。
+const defaultCDPTimeout = 30 * time.Second
 
 // Browser 持有整个浏览器连接和所有标签页
 type Browser struct {
@@ -75,6 +80,32 @@ func (b *Browser) removeContext(name string) {
 	b.ctxMu.Lock()
 	defer b.ctxMu.Unlock()
 	delete(b.contexts, name)
+}
+
+// boundedRootCtx 基于常驻 rootCtx 派生一个运行上下文：既携带 browser 级 CDP 路由信息，
+// 又受调用方 ctx 的取消与超时约束。browser 级命令必须在 rootCtx 分支上执行（依赖
+// FromContext(c).Browser 路由），但直接用无超时的 rootCtx 会在 Chrome 卡死时永久阻塞。
+//
+// 规则：调用方 ctx 带 deadline 时取 min(defaultCDPTimeout, 剩余时间)；否则套用默认超时；
+// 调用方 ctx 被取消时同步取消。返回的 cancel 需由调用方 defer 调用——届时监听 goroutine
+// 会因 runCtx.Done() 退出，不产生泄漏。取消 runCtx 只结束本次调用，不影响 rootCtx 上的
+// browser 长连接（该连接的生命周期绑定在 initRootContext 首次 Run 的 rootCtx 上）。
+func (b *Browser) boundedRootCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := defaultCDPTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if until := time.Until(dl); until < d {
+			d = until
+		}
+	}
+	runCtx, cancel := context.WithTimeout(b.rootCtx, d)
+	go func() {
+		select {
+		case <-ctx.Done(): // 调用方提前取消或到期，同步回收
+			cancel()
+		case <-runCtx.Done(): // 超时或调用方 defer cancel()，goroutine 退出
+		}
+	}()
+	return runCtx, cancel
 }
 
 // Port 返回当前 Browser 使用的调试端口

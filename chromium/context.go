@@ -88,9 +88,13 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 	}
 
 	// 手动创建隔离 browser context，并在其中开首个 target（必须 newWindow=true）。
+	// browser 级 CDP 调用用 boundedRootCtx 约束：既保留 browser 路由，又受调用方 ctx
+	// 取消/超时保护，Chrome 无响应时不会永久阻塞。
 	var bcID cdp.BrowserContextID
 	var firstID target.ID
-	err := chromedp.Run(b.rootCtx, chromedp.ActionFunc(func(c context.Context) error {
+	runCtx, cancelRun := b.boundedRootCtx(ctx)
+	defer cancelRun()
+	err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
 
 		p := target.CreateBrowserContext()
@@ -144,7 +148,10 @@ func (b *Browser) disposeBrowserContext(bcID cdp.BrowserContextID) {
 	if bcID == "" {
 		return
 	}
-	_ = chromedp.Run(b.rootCtx, chromedp.ActionFunc(func(c context.Context) error {
+	// teardown 无调用方 ctx，套用默认超时，避免 Chrome 无响应时 Close 永久阻塞。
+	runCtx, cancel := context.WithTimeout(b.rootCtx, defaultCDPTimeout)
+	defer cancel()
+	_ = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
 		return target.DisposeBrowserContext(bcID).Do(bexec)
 	}))
@@ -185,8 +192,11 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 	}
 
 	// 后续：在同一 browser context 内新建 target（已有窗口，无需 newWindow，作为标签页落入）
+	// browser 级 CDP 调用用 boundedRootCtx 约束，受调用方 ctx 取消/超时保护。
 	var tid target.ID
-	err := chromedp.Run(bc.browser.rootCtx, chromedp.ActionFunc(func(c context.Context) error {
+	runCtx, cancelRun := bc.browser.boundedRootCtx(ctx)
+	defer cancelRun()
+	err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
 		t, e := target.CreateTarget("about:blank").WithBrowserContextID(bc.bcID).Do(bexec)
 		tid = t

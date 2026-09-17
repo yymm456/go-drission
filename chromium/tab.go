@@ -32,7 +32,17 @@ func (t *Tab) safeCtx(ctx context.Context) context.Context {
 	}
 	if dl, ok := ctx.Deadline(); ok {
 		c, cancel := context.WithDeadline(t.Ctx, dl)
-		time.AfterFunc(time.Until(dl), cancel) // 到期自动回收，无需调用方手动 cancel
+		// 监听调用方 ctx：无论是提前 cancel 还是到期，都及时回收派生上下文。
+		// 相比 time.AfterFunc（直到 dl 才触发），这里能在调用方提前取消时立即释放，
+		// 避免长 deadline 下派生上下文长时间挂在 t.Ctx 上累积；runCtx 完成后调用方
+		// 的 defer cancel() 也会触发 ctx.Done()，goroutine 随即退出，无泄漏。
+		go func() {
+			select {
+			case <-ctx.Done():
+				cancel()
+			case <-c.Done():
+			}
+		}()
 		return c
 	}
 	return t.Ctx

@@ -1,8 +1,10 @@
 package chromium
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,12 +14,30 @@ import (
 )
 
 func isPortAlive(port int) bool {
+	// 1. 快速 TCP 探测
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
 	if err != nil {
 		return false
 	}
 	conn.Close()
-	return true
+
+	// 2. 确认是 Chrome DevTools 端点，而非其他进程恰好占用端口
+	client := &http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/json/version", port))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return false
+	}
+	var v struct {
+		Browser string `json:"Browser"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return false
+	}
+	return v.Browser != ""
 }
 
 // launchChrome 启动 Chrome，应用全部配置项，返回 exec.Cmd 以便调用方跟踪进程
