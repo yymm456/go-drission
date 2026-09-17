@@ -17,6 +17,12 @@ coverage.*
 *.tmp
 debug_*.png
 
+# 示例运行产生的生成物
+*.png
+cookies.json
+profiles/
+screenshots/
+
 # Go 工作区
 go.work
 go.work.sum
