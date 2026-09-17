@@ -30,7 +30,7 @@ go-drission/
     ├── launch.go        端口探测、Chrome 启动
     ├── targets.go       HTTP /json 查询与标签页同步
     ├── options.go       函数式配置项 WithXxx
-    ├── cookies.g.go     Cookie 注入 / 读取 / 导入导出
+    ├── cookies.go     Cookie 注入 / 读取 / 导入导出
     ├── listen.go        Network 域被动监听（Listener / Record）
     ├── port.go          空闲端口分配
     └── util.go          writeFile、contains
