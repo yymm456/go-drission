@@ -27,6 +27,7 @@ func launchChrome(port int, o *options) (*exec.Cmd, error) {
 		"--user-data-dir=" + o.userDataDir,
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--noerrdialogs", // 自动化场景不弹模态错误框（如数据目录占用），失败统一走返回错误
 	}
 
 	if o.headless {
@@ -54,18 +55,23 @@ func launchChrome(port int, o *options) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
 	}
 
-	for i := 0; i < 50; i++ {
+	// 等待调试端口就绪：超时时长遵循 connectTimeout（默认 10s）。
+	// 首次启动全新用户数据目录时 Chrome 冷启动较慢，可通过 WithConnectTimeout 放大。
+	timeout := o.connectTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	const interval = 200 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
 		if isPortAlive(port) {
 			return cmd, nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(interval)
 	}
-	// 端口未就绪：杀掉已启动的进程，避免留下僵尸 Chrome
-	if cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}
-	return nil, fmt.Errorf("chrome 已启动，但端口 %d 未在超时时间内就绪", port)
+	// 端口未就绪：杀掉已启动的整棵进程树，避免留下僵尸 Chrome 及其子进程占用 profile 目录
+	killProcessTree(cmd)
+	return nil, fmt.Errorf("chrome 已启动，但端口 %d 未在 %s 内就绪", port, timeout)
 }
 
 func defaultChromePath() string {

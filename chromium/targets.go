@@ -39,15 +39,13 @@ func (b *Browser) listTargets(ctx context.Context) ([]targetInfo, error) {
 	return infos, nil
 }
 
-// syncTabsLocked 把 Chrome 里真实存在的 page target 同步到 b.tabs
-// 调用前必须已持有 b.mu
+// targets.go
 func (b *Browser) syncTabsLocked(ctx context.Context) ([]*Tab, error) {
 	infos, err := b.listTargets(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 收集当前 Chrome 中实际存在的 page target ID
 	aliveIDs := map[target.ID]bool{}
 	for _, info := range infos {
 		if info.Type == "page" {
@@ -55,7 +53,6 @@ func (b *Browser) syncTabsLocked(ctx context.Context) ([]*Tab, error) {
 		}
 	}
 
-	// 清理已不在 Chrome 中的标签页（被外部关闭的），释放 context
 	var kept []*Tab
 	for _, t := range b.tabs {
 		if !aliveIDs[t.ID] {
@@ -79,14 +76,23 @@ func (b *Browser) syncTabsLocked(ctx context.Context) ([]*Tab, error) {
 			continue
 		}
 		id := target.ID(info.ID)
+		if id == b.rootTargetID {
+			continue // rootCtx 自身的锚点 target，不作为普通标签页管理
+		}
 		if tab, ok := seen[id]; ok {
-			// 已托管的标签页，更新 URL
 			tab.URL = info.URL
 			result = append(result, tab)
 		} else {
-			// 外部打开的标签页，纳入托管
-			ctx, cancel := chromedp.NewContext(b.allocCtx, chromedp.WithTargetID(id))
-			tab := &Tab{ID: id, Ctx: ctx, cancel: cancel, URL: info.URL}
+			// 外部打开的标签页：从常驻 rootCtx 派生以共享 browser 连接，
+			// 并 Run 一次激活附加到该 target，否则后续操作会报 "no browser is open"。
+			tabCtx, cancel := chromedp.NewContext(b.rootCtx, chromedp.WithTargetID(id))
+			if err := chromedp.Run(tabCtx); err != nil {
+				cancel()
+				// 该 target 无法附加（可能正在关闭），跳过
+				b.opts.logger.Warn("附加外部标签页失败", "id", id, "err", err)
+				continue
+			}
+			tab := &Tab{ID: id, Ctx: tabCtx, cancel: cancel, URL: info.URL}
 			b.tabs = append(b.tabs, tab)
 			result = append(result, tab)
 		}

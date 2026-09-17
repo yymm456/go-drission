@@ -1,6 +1,10 @@
 package chromium
 
-import "time"
+import (
+	"io"
+	"log/slog"
+	"time"
+)
 
 // options 保存 Browser 的可配置项
 type options struct {
@@ -11,7 +15,8 @@ type options struct {
 	headless       bool
 	windowSize     string
 	connectTimeout time.Duration
-	extraFlags     []flagPair // 自定义启动参数
+	extraFlags     []flagPair   // 自定义启动参数
+	logger         *slog.Logger // 库内部日志；默认静默，由 WithLogger 开启
 }
 
 // flagPair 表示一个 Chrome 启动参数
@@ -30,8 +35,10 @@ func defaultOptions() *options {
 	return &options{
 		chromePath:     defaultChromePath(),
 		headless:       false,
-		windowSize:     "1280,800",
+		windowSize:     "1920,1080",
 		connectTimeout: 10 * time.Second,
+		// 默认丢弃所有日志：库不应擅自向 stdout/stderr 打印，避免污染调用方输出
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
@@ -88,5 +95,17 @@ func WithConnectTimeout(d time.Duration) Option {
 func WithFlag(name, value string) Option {
 	return func(o *options) {
 		o.extraFlags = append(o.extraFlags, flagPair{name, value})
+	}
+}
+
+// WithLogger 设置库内部日志输出。默认静默（丢弃所有日志）；
+// 传入自定义 *slog.Logger 即可观察连接、启动等过程，例如：
+//
+//	chromium.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+func WithLogger(l *slog.Logger) Option {
+	return func(o *options) {
+		if l != nil {
+			o.logger = l
+		}
 	}
 }

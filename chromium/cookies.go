@@ -78,7 +78,7 @@ func buildCookieParamBulk(c Cookie) *network.CookieParam {
 
 // SetCookie 注入单个 Cookie
 func (t *Tab) SetCookie(ctx context.Context, c Cookie) error {
-	return chromedp.Run(ctx, buildCookieParam(c))
+	return chromedp.Run(t.safeCtx(ctx), buildCookieParam(c))
 }
 
 // SetCookies 批量注入 Cookie
@@ -87,13 +87,13 @@ func (t *Tab) SetCookies(ctx context.Context, cookies []Cookie) error {
 	for _, c := range cookies {
 		params = append(params, buildCookieParamBulk(c))
 	}
-	return chromedp.Run(ctx, network.SetCookies(params))
+	return chromedp.Run(t.safeCtx(ctx), network.SetCookies(params))
 }
 
 // GetCookies 返回指定 URL 下的所有 Cookie
 func (t *Tab) GetCookies(ctx context.Context, urls ...string) ([]*network.Cookie, error) {
 	var cookies []*network.Cookie
-	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.ActionFunc(func(ctx context.Context) error {
 		var err error
 		cookies, err = network.GetCookies().WithURLs(urls).Do(ctx)
 		return err

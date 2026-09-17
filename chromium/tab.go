@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -21,30 +23,45 @@ type Tab struct {
 	URL    string
 }
 
+// safeCtx 对调用方误传「裸 context」（不含 chromedp 路由信息）时的兜底：
+// chromedp.Run 收到裸 context 会另起一个临时浏览器执行命令，命令根本落不到本标签页。
+// 检测到裸 context 时回退到标签页自身的会话上下文；若裸 context 带 deadline 则保留其超时语义。
+func (t *Tab) safeCtx(ctx context.Context) context.Context {
+	if chromedp.FromContext(ctx) != nil {
+		return ctx
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		c, cancel := context.WithDeadline(t.Ctx, dl)
+		time.AfterFunc(time.Until(dl), cancel) // 到期自动回收，无需调用方手动 cancel
+		return c
+	}
+	return t.Ctx
+}
+
 // Navigate 导航到 url，等待页面 load 完成。
 // 超时与取消由 ctx 控制；导航失败（含超时）如实返回 error，不吞掉。
 func (t *Tab) Navigate(ctx context.Context, url string) error {
-	return chromedp.Run(ctx, chromedp.Navigate(url))
+	return chromedp.Run(t.safeCtx(ctx), chromedp.Navigate(url))
 }
 
 // Title 返回当前页面标题
 func (t *Tab) Title(ctx context.Context) (string, error) {
 	var title string
-	err := chromedp.Run(ctx, chromedp.Title(&title))
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.Title(&title))
 	return title, err
 }
 
 // CurrentURL 返回当前页面地址
 func (t *Tab) CurrentURL(ctx context.Context) (string, error) {
 	var u string
-	err := chromedp.Run(ctx, chromedp.Location(&u))
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.Location(&u))
 	return u, err
 }
 
 // HTML 返回当前页面完整 HTML
 func (t *Tab) HTML(ctx context.Context) (string, error) {
 	var html string
-	err := chromedp.Run(ctx, chromedp.OuterHTML("html", &html))
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.OuterHTML("html", &html))
 	return html, err
 }
 
@@ -53,7 +70,7 @@ func (t *Tab) HTML(ctx context.Context) (string, error) {
 // 数组→[]interface{}、布尔→bool、null→nil。
 func (t *Tab) Eval(ctx context.Context, js string) (interface{}, error) {
 	var result interface{}
-	err := chromedp.Run(ctx, chromedp.Evaluate(js, &result))
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.Evaluate(js, &result))
 	return result, err
 }
 
@@ -61,12 +78,12 @@ func (t *Tab) Eval(ctx context.Context, js string) (interface{}, error) {
 
 // WaitVisible 等待元素可见
 func (t *Tab) WaitVisible(ctx context.Context, selector string) error {
-	return chromedp.Run(ctx, chromedp.WaitVisible(selector, chromedp.ByQuery))
+	return chromedp.Run(t.safeCtx(ctx), chromedp.WaitVisible(selector, chromedp.ByQuery))
 }
 
 // WaitReady 等待页面加载完成（body 就绪）
 func (t *Tab) WaitReady(ctx context.Context) error {
-	return chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery))
+	return chromedp.Run(t.safeCtx(ctx), chromedp.WaitReady("body", chromedp.ByQuery))
 }
 
 // WaitURL 轮询等待当前 URL 包含指定子串，直到 ctx 结束
@@ -113,9 +130,18 @@ func (t *Tab) WaitCount(ctx context.Context, selector string, n int) error {
 
 // ---------- 操作 ----------
 
+// BringToFront 将该标签页激活并置前（切换到前台窗口/标签）。
+// 后台窗口会被 Chrome 节流，SendKeys 等输入事件可能丢失，
+// 多窗口（如隔离上下文各自开窗）场景下交互前应先调用本方法。
+func (t *Tab) BringToFront(ctx context.Context) error {
+	return chromedp.Run(t.safeCtx(ctx), chromedp.ActionFunc(func(ctx context.Context) error {
+		return page.BringToFront().Do(ctx)
+	}))
+}
+
 // Click 点击元素
 func (t *Tab) Click(ctx context.Context, selector string) error {
-	return chromedp.Run(ctx, chromedp.Click(selector, chromedp.ByQuery))
+	return chromedp.Run(t.safeCtx(ctx), chromedp.Click(selector, chromedp.ByQuery))
 }
 
 // ClickJS 用 JS 触发点击，绕过可见性检查
@@ -129,7 +155,7 @@ func (t *Tab) ClickJS(ctx context.Context, selector string) error {
 })()
 `, selector)
 	var result string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &result)); err != nil {
+	if err := chromedp.Run(t.safeCtx(ctx), chromedp.Evaluate(js, &result)); err != nil {
 		return err
 	}
 	if result != "ok" {
@@ -140,7 +166,7 @@ func (t *Tab) ClickJS(ctx context.Context, selector string) error {
 
 // SendKeys 向输入框输入文本（会先清空）
 func (t *Tab) SendKeys(ctx context.Context, selector, text string) error {
-	return chromedp.Run(ctx,
+	return chromedp.Run(t.safeCtx(ctx),
 		chromedp.Clear(selector, chromedp.ByQuery),
 		chromedp.SendKeys(selector, text, chromedp.ByQuery),
 	)
@@ -162,7 +188,7 @@ func (t *Tab) SetValue(ctx context.Context, selector, value string) error {
 `, selector, value)
 
 	var result string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &result)); err != nil {
+	if err := chromedp.Run(t.safeCtx(ctx), chromedp.Evaluate(js, &result)); err != nil {
 		return err
 	}
 	if result != "ok" {
@@ -171,19 +197,37 @@ func (t *Tab) SetValue(ctx context.Context, selector, value string) error {
 	return nil
 }
 
+// WindowID 返回该标签页所属的 OS 窗口编号（Browser.getWindowForTarget）。
+// 同一窗口内的多个标签页返回相同编号，可用于验证「同窗口多标签」与「独立窗口」：
+// 同一隔离上下文内的标签页同窗口，不同隔离上下文各自一个窗口。
+// 注意：getWindowForTarget 是 browser 级命令，需切到 browser 级连接执行。
+func (t *Tab) WindowID(ctx context.Context) (int64, error) {
+	var wid int64
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.ActionFunc(func(c context.Context) error {
+		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		id, _, e := browser.GetWindowForTarget().WithTargetID(t.ID).Do(bexec)
+		if e != nil {
+			return e
+		}
+		wid = id.Int64()
+		return nil
+	}))
+	return wid, err
+}
+
 // ---------- 读取 ----------
 
 // Text 返回元素的文本内容
 func (t *Tab) Text(ctx context.Context, selector string) (string, error) {
 	var text string
-	err := chromedp.Run(ctx, chromedp.Text(selector, &text, chromedp.ByQuery))
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.Text(selector, &text, chromedp.ByQuery))
 	return text, err
 }
 
 // Attribute 返回指定选择器元素的属性值
 func (t *Tab) Attribute(ctx context.Context, selector, name string) (string, error) {
 	var value string
-	err := chromedp.Run(ctx, chromedp.AttributeValue(selector, name, &value, nil, chromedp.ByQuery))
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.AttributeValue(selector, name, &value, nil, chromedp.ByQuery))
 	return value, err
 }
 
@@ -191,7 +235,7 @@ func (t *Tab) Attribute(ctx context.Context, selector, name string) (string, err
 func (t *Tab) Count(ctx context.Context, selector string) (int, error) {
 	var count int
 	js := fmt.Sprintf(`document.querySelectorAll(%q).length`, selector)
-	err := chromedp.Run(ctx, chromedp.Evaluate(js, &count))
+	err := chromedp.Run(t.safeCtx(ctx), chromedp.Evaluate(js, &count))
 	return count, err
 }
 
@@ -200,7 +244,7 @@ func (t *Tab) Count(ctx context.Context, selector string) (int, error) {
 // Screenshot 截取当前页面，保存到 path
 func (t *Tab) Screenshot(ctx context.Context, path string) error {
 	var buf []byte
-	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
+	if err := chromedp.Run(t.safeCtx(ctx), chromedp.CaptureScreenshot(&buf)); err != nil {
 		return err
 	}
 	return writeFile(path, buf)
@@ -208,7 +252,7 @@ func (t *Tab) Screenshot(ctx context.Context, path string) error {
 
 // Reload 重新加载当前页面
 func (t *Tab) Reload(ctx context.Context) error {
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+	return chromedp.Run(t.safeCtx(ctx), chromedp.ActionFunc(func(ctx context.Context) error {
 		return page.Reload().Do(ctx)
 	}))
 }
