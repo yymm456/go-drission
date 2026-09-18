@@ -80,16 +80,31 @@ func validateCookie(c Cookie, idx int) error {
 	return nil
 }
 
-// buildCookieParam 把 Cookie 转换成 CDP 的 SetCookieParams（单个设置用）
-func buildCookieParam(c Cookie) *network.SetCookieParams {
-	path := c.Path
-	if path == "" {
-		path = "/"
+// cookiePath 返回注入用的 Cookie path，缺省为 "/"（与浏览器默认一致）。
+func cookiePath(c Cookie) string {
+	if c.Path == "" {
+		return "/"
 	}
+	return c.Path
+}
 
+// cookieExpires 把 Cookie.Expires（Unix 秒）转成 CDP 时间戳；<= 0 表示会话 Cookie，返回 nil。
+func cookieExpires(c Cookie) *cdp.TimeSinceEpoch {
+	if c.Expires <= 0 {
+		return nil
+	}
+	exp := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
+	return &exp
+}
+
+// buildCookieParam 把 Cookie 转换成 CDP 的 SetCookieParams（单个设置用）。
+//
+// path / Expires 的归一化与批量路径共用 cookiePath / cookieExpires——
+// 两条注入路径的字段映射各写一份，迟早会出现「只改了一条」的偏差。
+func buildCookieParam(c Cookie) *network.SetCookieParams {
 	p := network.SetCookie(c.Name, c.Value).
 		WithDomain(c.Domain).
-		WithPath(path)
+		WithPath(cookiePath(c))
 
 	if c.HTTPOnly {
 		p = p.WithHTTPOnly(true)
@@ -100,35 +115,29 @@ func buildCookieParam(c Cookie) *network.SetCookieParams {
 	if c.SameSite != "" {
 		p = p.WithSameSite(network.CookieSameSite(c.SameSite))
 	}
-	if c.Expires > 0 {
-		exp := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
-		p = p.WithExpires(&exp)
+	if exp := cookieExpires(c); exp != nil {
+		p = p.WithExpires(exp)
 	}
 	return p
 }
 
-// buildCookieParamBulk 把 Cookie 转换成 CDP 的 CookieParam（批量设置用）
+// buildCookieParamBulk 把 Cookie 转换成 CDP 的 CookieParam（批量设置用）。
+//
+// path / Expires 与单个设置路径共用 cookiePath / cookieExpires，
+// 免得「改了单条、忘了批量」造成两条注入路径不一致。
 func buildCookieParamBulk(c Cookie) *network.CookieParam {
-	path := c.Path
-	if path == "" {
-		path = "/"
-	}
-
 	p := &network.CookieParam{
 		Name:     c.Name,
 		Value:    c.Value,
 		Domain:   c.Domain,
-		Path:     path,
+		Path:     cookiePath(c),
 		HTTPOnly: c.HTTPOnly,
 		Secure:   c.Secure,
+		Expires:  cookieExpires(c),
 	}
 
 	if c.SameSite != "" {
 		p.SameSite = network.CookieSameSite(c.SameSite)
-	}
-	if c.Expires > 0 {
-		exp := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
-		p.Expires = &exp
 	}
 	return p
 }

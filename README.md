@@ -1003,6 +1003,29 @@ if errors.Is(err, chromium.ErrClosed) {
 | `ErrInvalidCookie` / `ErrInvalidCookieJSON` | 注入的 Cookie 字段不全 / JSON 结构非法 |
 | `ErrEmptyURL` | 传入的地址为空或不是绝对 http(s) 地址 |
 
+等待类方法超时返回的错误**不是单层的**，按实现分两条：
+
+- **轮询式**（`WaitURL` / `Wait().Text()` / `Wait().Present()` / `Wait().Count(n)`）：
+  外层是 `context.DeadlineExceeded`（`Present` / `Count` 会再套一层 `ErrElementNotFound`），
+  内层挂着**期间最后一次底层错误**——典型是导航途中 CDP 抛的 `execution context destroyed`。
+  两个 `%w` 让 `errors.Is` 两条链都走得通，不必为了拿到原因去比对字符串。
+- **chromedp 直连式**（`Wait().Visible()`）：由 chromedp 内部重试到 ctx 到期，
+  统一翻译成 `ErrElementNotFound`（文案带「等待元素超时」）。`Wait().Ready()` 不翻译，原样返回。
+
+```go
+err := tab.EleCSS("#submit").Wait().Count(1).Timeout(3 * time.Second).Do(tab.Ctx)
+switch {
+case errors.Is(err, chromium.ErrElementNotFound):
+    // 元素始终没出现
+case errors.Is(err, context.Canceled):
+    // 是自己取消了 ctx，不是元素的问题
+}
+```
+
+注意 `Wait().Text()` 与 `WaitURL` 都**不带** `ErrElementNotFound`：前者是「文本还没变成这个值」，
+后者是页面级条件，都不等于「元素不存在」——判「条件没满足」请看 `context.DeadlineExceeded`。
+调用方**主动取消** ctx 时一律原样透传，不会被伪装成「元素没找到」。
+
 `session` 包同样导出一组哨兵值：
 
 | 哨兵错误 | 含义 |

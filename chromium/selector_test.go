@@ -67,6 +67,45 @@ func TestSelectorJSString(t *testing.T) {
 	}
 }
 
+// TestSelectorCountJS 钉住「选择器 → 计数 JS」的映射（selectorCountJS）。
+//
+// 这段映射原先在 Element.Count 与 FrameElement.Count 里各写一份，case 顺序与取值
+// （sel.expr / sel.String()）都不同，只是恰好等价；现收敛成一处，需要单测锁住产出。
+//
+// XPath 那条特意带双引号属性值——它会经 %q 转义成 \"，不转义就会把 JS 字符串提前截断。
+func TestSelectorCountJS(t *testing.T) {
+	cases := []struct {
+		name string
+		sel  Selector
+		want []string
+	}{
+		{"css", CSS("#a"), []string{`document.querySelectorAll("#a").length`}},
+		{
+			"xpath",
+			XPath(`//div[@data-x="a"]`),
+			[]string{`document.evaluate("count(//div[@data-x=\"a\"])", document, null, 1, null).numberValue`},
+		},
+		{"id", ID("uid"), []string{`document.getElementById("uid")`, "? 1 : 0"}},
+		{"jspath", JS("document.querySelector('#host')"), []string{"document.querySelector('#host')", "? 1 : 0"}},
+	}
+
+	for _, c := range cases {
+		got := selectorCountJS(c.sel)
+		for _, frag := range c.want {
+			if !strings.Contains(got, frag) {
+				t.Errorf("%s: selectorCountJS(%s) = %s，缺少片段 %q", c.name, c.sel, got, frag)
+			}
+		}
+	}
+
+	// ID / JS path 是「单个元素」语义，不能退化成按 CSS 的 querySelectorAll 计数。
+	for _, s := range []Selector{ID("uid"), JS("document.body")} {
+		if strings.Contains(selectorCountJS(s), "querySelectorAll") {
+			t.Errorf("%s 被错误地当作 CSS 计数：%s", s.Mode(), selectorCountJS(s))
+		}
+	}
+}
+
 // TestSelectorValidate 覆盖空选择器的拦截。
 //
 // 空表达式传到浏览器会变成 querySelector("") 并抛 SyntaxError，错误文案里

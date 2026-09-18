@@ -122,21 +122,16 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 		return nil, fmt.Errorf("创建隔离上下文 %q 失败: %w", name, err)
 	}
 
-	// attach 一个 chromedp 上下文到首个 target，作为该上下文的根标签页
-	// rootCtx 在锁内取快照（并发 Close 会置 nil，chromedp.NewContext(nil) 会 panic）
-	rootCtx, err := b.connectedRootCtx()
+	// attach 一个 chromedp 上下文到首个 target，作为该上下文的根标签页。
+	//
+	// 走 newTabCtx 而不是就地手写 NewContext + tabInitBudget + runAbandonable：
+	// 首次 attach 的超时约束（见 BUG-07）与 Browser.NewTab 是同一条规则，
+	// 抄第二遍迟早会漏。ctx 只约束「等待预算」，Run 仍跑在长命的 tab 上下文上，
+	// Chrome 无响应时不会把调用方永久挂住，也不会掐断 target 的事件分发 goroutine。
+	//
+	// 失败时照旧回收已建的隔离上下文，避免留下一个没有任何标签页的空上下文。
+	firstCtx, firstCancel, err := b.newTabCtx(ctx, chromedp.WithTargetID(firstID))
 	if err != nil {
-		b.disposeBrowserContext(bcID)
-		return nil, err
-	}
-	firstCtx, firstCancel := chromedp.NewContext(rootCtx, chromedp.WithTargetID(firstID))
-	// 超时只加在等待预算上，避免 Chrome 无响应时永久阻塞（见 tabInitBudget）
-	budget, cancelBudget := tabInitBudget(ctx)
-	defer cancelBudget()
-	if err := runAbandonable(budget, firstCtx, func(runCtx context.Context) error {
-		return chromedp.Run(runCtx)
-	}); err != nil {
-		firstCancel()
 		b.disposeBrowserContext(bcID)
 		return nil, fmt.Errorf("attach 隔离上下文 %q 首个标签页失败: %w", name, err)
 	}
@@ -193,12 +188,12 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 	if bc.closed {
 		return nil, fmt.Errorf("%w: %s", ErrContextClosed, bc.name)
 	}
-	timeout := bc.browser.opts.defaultTimeout
 
 	// 首次：消费创建上下文时预建的首个 target
 	if !bc.firstUsed {
 		bc.firstUsed = true
-		tab := &Tab{ID: bc.firstTargetID, Ctx: bc.firstTabCtx, cancel: bc.firstTabCancel, url: "about:blank", timeout: timeout, logger: bc.browser.opts.logger}
+		tab := bc.browser.newTabHandle(bc.firstTabCtx, bc.firstTargetID, bc.firstTabCancel)
+		tab.setURL("about:blank")
 		bc.tabs = append(bc.tabs, tab)
 		bc.applyAntiDetect(tab)
 		return tab, nil
@@ -219,21 +214,13 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 		return nil, fmt.Errorf("隔离上下文内新建标签页失败: %w", err)
 	}
 
-	rootCtx, err := bc.browser.connectedRootCtx()
+	// 派生 tab 上下文并完成 attach；首次 Run 与超时预算的细节见 newTabCtx。
+	tabCtx, cancel, err := bc.browser.newTabCtx(ctx, chromedp.WithTargetID(tid))
 	if err != nil {
 		return nil, err
 	}
-	tabCtx, cancel := chromedp.NewContext(rootCtx, chromedp.WithTargetID(tid))
-	// 超时只加在等待预算上，避免 Chrome 无响应时永久阻塞（见 tabInitBudget）
-	budget, cancelBudget := tabInitBudget(ctx)
-	defer cancelBudget()
-	if err := runAbandonable(budget, tabCtx, func(runCtx context.Context) error {
-		return chromedp.Run(runCtx)
-	}); err != nil {
-		cancel()
-		return nil, err
-	}
-	tab := &Tab{ID: tid, Ctx: tabCtx, cancel: cancel, url: "about:blank", timeout: timeout, logger: bc.browser.opts.logger}
+	tab := bc.browser.newTabHandle(tabCtx, tid, cancel)
+	tab.setURL("about:blank")
 	bc.tabs = append(bc.tabs, tab)
 	bc.applyAntiDetect(tab)
 	return tab, nil

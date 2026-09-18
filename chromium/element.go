@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
@@ -202,21 +201,9 @@ func (e *Element) Count(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	var js string
-	switch e.sel.mode {
-	case modeXPath:
-		// count() 返回数字，必须请求 NUMBER_TYPE(1)；用 FIRST_ORDERED_NODE_TYPE(9)
-		// 会报 "The result is not a node set"。XPath 里带双引号的属性值是常态
-		// （//div[@data-x="a"]），因此整段表达式必须用 %q 拼进 JS 字符串，
-		// 手写引号会把 JS 字符串提前截断。
-		js = fmt.Sprintf(`document.evaluate(%q, document, null, 1, null).numberValue`,
-			"count("+e.sel.expr+")")
-	case modeID, modeJSPath:
-		// ID / JS path 语义上就是「单个元素」：命中返回 1，未命中返回 0
-		js = fmt.Sprintf(`(function(){ const el = %s; return el ? 1 : 0; })()`, e.sel.jsExpr())
-	default:
-		js = fmt.Sprintf(`document.querySelectorAll(%q).length`, e.sel.expr)
-	}
+	// 选择器 → 计数 JS 的映射收敛在 selectorCountJS，与 FrameElement.Count 共用同一份；
+	// 两条路径各写一份 mode 分支迟早会漂移（这段分支历史上就出过 BUG-04）。
+	js := selectorCountJS(e.sel)
 
 	var count int
 	if err := e.tab.run(ctx, chromedp.Evaluate(js, &count)); err != nil {
@@ -259,26 +246,11 @@ func (e *Element) WaitVisible(ctx context.Context) error {
 //
 // 与 Wait().Text(substr).Do(ctx) 等价，用于只等一个条件、不想拉链式调用的场景。
 func (e *Element) WaitText(ctx context.Context, substr string) error {
-	ticker := time.NewTicker(waitPollInterval)
-	defer ticker.Stop()
-
-	var lastErr error
-	for {
+	// 循环骨架与错误分诊规则见 pollWait。
+	return pollWait(ctx, fmt.Sprintf("等待 %s 文本包含 %q", e, substr), false, func() (bool, error) {
 		text, err := e.Text(ctx)
-		if err == nil && strings.Contains(text, substr) {
-			return nil
-		}
-		if waitFatalErr(err) {
-			return fmt.Errorf("等待 %s 文本包含 %q 失败: %w", e, substr, err)
-		}
-		lastErr = waitRecordErr(lastErr, err)
-
-		select {
-		case <-ctx.Done():
-			return waitTimeoutErr(fmt.Sprintf("等待 %s 文本包含 %q", e, substr), ctx.Err(), lastErr)
-		case <-ticker.C:
-		}
-	}
+		return err == nil && strings.Contains(text, substr), err
+	})
 }
 
 // Wait 返回绑定到该元素的链式等待构建器。

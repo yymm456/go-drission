@@ -357,26 +357,15 @@ func (l *Listener) handleRequest(e *network.EventRequestWillBeSent) {
 
 	// POST 请求但没有 PostDataEntries → 用 GetRequestPostData 兜底
 	if !hasBody && isBodyMethod(e.Request.Method) {
-		l.track(func() {
-			l.sem <- struct{}{}
-			defer func() { <-l.sem }()
-
-			var postData []byte
-			err := chromedp.Run(l.runCtx(), chromedp.ActionFunc(func(ctx context.Context) error {
-				var err error
-				postData, err = network.GetRequestPostData(e.RequestID).Do(ctx)
-				return err
-			}))
-			if err != nil || len(postData) == 0 {
-				return
-			}
-
-			l.mu.Lock()
-			if rec.RequestBody == "" {
-				rec.RequestBody = string(postData)
-			}
-			l.mu.Unlock()
-		})
+		l.fetchBodyAsync(id,
+			func(ctx context.Context) ([]byte, error) {
+				return network.GetRequestPostData(e.RequestID).Do(ctx)
+			},
+			func(rec *Record, body []byte) {
+				if rec.RequestBody == "" {
+					rec.RequestBody = string(body)
+				}
+			})
 	}
 }
 
@@ -409,6 +398,42 @@ func (l *Listener) handleResponse(e *network.EventResponseReceived) {
 	}
 }
 
+// fetchBodyAsync 是「后台补取 body 并回填记录」这条骨架的唯一实现。
+//
+// track → 信号量进出 → chromedp.Run 里执行一次 CDP 调用 → 空体/失败直接丢弃 → 回填。
+// handleRequest（补请求体）与 handleLoadingFinished（补响应体）除了取哪个 body、
+// 写哪个字段之外完全一样，抄两遍就会漂移。
+//
+// fetch 收到的是 chromedp 的 action 上下文（由 runCtx() 派生，带监听生命周期）；
+// 返回空体一律视为「没取到」，不做回填——对两个调用方都是正确的。
+//
+// assign 在 l.mu 保护下、以「按 reqID 查到的现存记录」为参数被调用，由调用方决定
+// 「已经填过就不覆盖」等判据。记录若已被 Clear / FIFO 淘汰则直接跳过回填：
+// 写进一条已不在记录表里的对象没有意义。
+func (l *Listener) fetchBodyAsync(reqID string, fetch func(context.Context) ([]byte, error), assign func(*Record, []byte)) {
+	l.track(func() {
+		// 信号量限并发；defer 保证任何返回路径都释放，不会把限量永久占住
+		l.sem <- struct{}{}
+		defer func() { <-l.sem }()
+
+		var body []byte
+		err := chromedp.Run(l.runCtx(), chromedp.ActionFunc(func(ctx context.Context) error {
+			var err error
+			body, err = fetch(ctx)
+			return err
+		}))
+		if err != nil || len(body) == 0 {
+			return
+		}
+
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if rec, ok := l.records[reqID]; ok {
+			assign(rec, body)
+		}
+	})
+}
+
 func (l *Listener) handleLoadingFinished(e *network.EventLoadingFinished) {
 	id := string(e.RequestID)
 
@@ -420,27 +445,16 @@ func (l *Listener) handleLoadingFinished(e *network.EventLoadingFinished) {
 	}
 	l.mu.Unlock()
 
-	// 异步获取响应体，用信号量控制并发
-	l.track(func() {
-		l.sem <- struct{}{}
-		defer func() { <-l.sem }()
-
-		var body []byte
-		err := chromedp.Run(l.runCtx(), chromedp.ActionFunc(func(ctx context.Context) error {
-			var err error
-			body, err = network.GetResponseBody(e.RequestID).Do(ctx)
-			return err
-		}))
-		if err != nil {
-			return
-		}
-
-		l.mu.Lock()
-		if rec, ok := l.records[id]; ok && rec.ResponseBody == "" {
-			rec.ResponseBody = string(body)
-		}
-		l.mu.Unlock()
-	})
+	// 异步获取响应体（并发限流与回填逻辑见 fetchBodyAsync）
+	l.fetchBodyAsync(id,
+		func(ctx context.Context) ([]byte, error) {
+			return network.GetResponseBody(e.RequestID).Do(ctx)
+		},
+		func(rec *Record, body []byte) {
+			if rec.ResponseBody == "" {
+				rec.ResponseBody = string(body)
+			}
+		})
 }
 
 // ---------- 辅助 ----------

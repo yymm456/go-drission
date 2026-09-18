@@ -239,17 +239,11 @@ func (j *Jar) Cookies(u *url.URL) []*http.Cookie {
 			continue
 		}
 		for key, e := range sub {
-			if e.hostOnly && domain != host {
-				continue
-			}
 			if e.expired(now) {
 				delete(sub, key) // 顺手清掉过期项，避免容器无限增长
 				continue
 			}
-			if !pathMatch(reqPath, e.Path) {
-				continue
-			}
-			if e.Secure && !https {
+			if !matchRequest(e, host, domain, reqPath, https) {
 				continue
 			}
 			//nolint:gosec // G124：这里是把服务端下发的属性原样回放给 net/http，
@@ -343,16 +337,7 @@ func (j *Jar) CookiesFor(rawURL string) ([]CookieItem, error) {
 			continue
 		}
 		for _, e := range sub {
-			if e.hostOnly && domain != host {
-				continue
-			}
-			if e.expired(now) {
-				continue
-			}
-			if !pathMatch(reqPath, e.Path) {
-				continue
-			}
-			if e.Secure && !https {
+			if e.expired(now) || !matchRequest(e, host, domain, reqPath, https) {
 				continue
 			}
 			out = append(out, exportItem(e))
@@ -456,6 +441,25 @@ func (j *Jar) Len() int {
 }
 
 // ---------- 辅助 ----------
+
+// matchRequest 判断一条内部 Cookie 是否应当随 (host, reqPath, https) 的请求发出。
+//
+// 不含「是否过期」：那是调用方各自的策略——Cookies 顺手删除过期项（持有写锁），
+// CookiesFor 只是跳过（持有读锁）。把「域名归属 + hostOnly + 路径前缀 + Secure」这四步
+// 收在一处，是因为 Cookies / CookiesFor 是同一个匹配语义的两个出口，
+// 各写一份必然漂移（写入路径的同类问题已经出过一次，见 validCookieDomain 的注释）。
+func matchRequest(e *entry, host, domain, reqPath string, https bool) bool {
+	if e.hostOnly && domain != host {
+		return false
+	}
+	if !pathMatch(reqPath, e.Path) {
+		return false
+	}
+	if e.Secure && !https {
+		return false
+	}
+	return true
+}
 
 // domainMatch 判断请求域名 host 是否落在 Cookie 的 domain 范围内。
 func domainMatch(host, domain string) bool {

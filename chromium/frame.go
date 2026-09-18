@@ -136,19 +136,7 @@ func (t *Tab) frameInfos(ctx context.Context) ([]frameInfo, error) {
 // bindFrame 为指定框架创建 isolated world 并返回可操作的 Frame。
 // loc 记录这次定位的依据，供页面导航后重新定位使用。
 func (t *Tab) bindFrame(ctx context.Context, info frameInfo, loc frameLocator) (*Frame, error) {
-	var worldID runtime.ExecutionContextID
-	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		res, e := page.CreateIsolatedWorld(info.ID).
-			WithGrantUniveralAccess(true).
-			Do(c)
-		if e != nil {
-			return e
-		}
-		if res != 0 {
-			worldID = res
-		}
-		return nil
-	}))
+	worldID, err := t.createIsolatedWorld(ctx, info.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -211,33 +199,42 @@ func (t *Tab) Frame(ctx context.Context, sel Selector) (*Frame, error) {
 	return t.bindFrame(ctx, *target, frameLocator{selector: sel, hasSel: true})
 }
 
-// FrameByURL 按 URL 子串查找框架，取第一个匹配的。
-// iframe 没有 id/name 可依赖时（如广告位、第三方嵌入）通常用这种方式。
-func (t *Tab) FrameByURL(ctx context.Context, substr string) (*Frame, error) {
+// findFrame 是「拉框架树 → 遍历找第一个匹配的 → bindFrame」这条骨架的唯一实现。
+//
+// FrameByURL / FrameByName 只有判据（matcher）和未命中文案（errMsg）不同；
+// 骨架里的三件事——取 infos、首个命中即绑定、找不到报 ErrFrameNotFound——
+// 抄两遍就会出现「一处补了错误处理、另一处忘了」的漂移。
+//
+// 注意 Tab.Frame(sel) 不走这里：它多一步 DOM.getFrameOwner 与 nodeID 比对，
+// 判据不能退化成一个纯函数（详情见 Frame）。
+func (t *Tab) findFrame(ctx context.Context, loc frameLocator, matcher func(frameInfo) bool, errMsg string) (*Frame, error) {
 	infos, err := t.frameInfos(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, info := range infos {
-		if strings.Contains(info.URL, substr) {
-			return t.bindFrame(ctx, info, frameLocator{urlSub: substr})
+		if matcher(info) {
+			return t.bindFrame(ctx, info, loc)
 		}
 	}
-	return nil, fmt.Errorf("%w: 没有 URL 包含 %q 的 iframe", ErrFrameNotFound, substr)
+	return nil, fmt.Errorf("%w: %s", ErrFrameNotFound, errMsg)
+}
+
+// FrameByURL 按 URL 子串查找框架，取第一个匹配的。
+// iframe 没有 id/name 可依赖时（如广告位、第三方嵌入）通常用这种方式。
+func (t *Tab) FrameByURL(ctx context.Context, substr string) (*Frame, error) {
+	return t.findFrame(ctx,
+		frameLocator{urlSub: substr},
+		func(info frameInfo) bool { return strings.Contains(info.URL, substr) },
+		fmt.Sprintf("没有 URL 包含 %q 的 iframe", substr))
 }
 
 // FrameByName 按 <iframe name="..."> 查找框架。
 func (t *Tab) FrameByName(ctx context.Context, name string) (*Frame, error) {
-	infos, err := t.frameInfos(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, info := range infos {
-		if info.Name == name {
-			return t.bindFrame(ctx, info, frameLocator{name: name})
-		}
-	}
-	return nil, fmt.Errorf("%w: 没有 name=%q 的 iframe", ErrFrameNotFound, name)
+	return t.findFrame(ctx,
+		frameLocator{name: name},
+		func(info frameInfo) bool { return info.Name == name },
+		fmt.Sprintf("没有 name=%q 的 iframe", name))
 }
 
 // ---------- 框架内操作 ----------
@@ -339,9 +336,15 @@ func (f *Frame) relocate(ctx context.Context) error {
 
 // recreateWorld 为该框架重建 isolated world，返回新的 contextID。
 func (f *Frame) recreateWorld(ctx context.Context) (runtime.ExecutionContextID, error) {
+	return f.parent.createIsolatedWorld(ctx, f.id)
+}
+
+// createIsolatedWorld 在指定框架里建立一个 isolated world，返回其 execution context ID。
+// bindFrame 与 recreateWorld 共用同一段 CDP 调用（同一个操作的两种时机）。
+func (t *Tab) createIsolatedWorld(ctx context.Context, id cdp.FrameID) (runtime.ExecutionContextID, error) {
 	var worldID runtime.ExecutionContextID
-	err := f.parent.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		res, e := page.CreateIsolatedWorld(f.id).
+	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		res, e := page.CreateIsolatedWorld(id).
 			WithGrantUniveralAccess(true).
 			Do(c)
 		if e != nil {

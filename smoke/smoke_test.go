@@ -835,6 +835,45 @@ func TestListener(t *testing.T) {
 	}
 }
 
+// TestListenerResponseBodyBackfill 守住「后台补取响应体」这条异步路径。
+//
+// 这是 Listener 里唯一会异步往 Record 里写字的地方（handleLoadingFinished →
+// fetchBodyAsync → GetResponseBody → 回填 ResponseBody）。它此前没有任何断言覆盖：
+// 把整个回填删掉，其余 listener 用例照样全绿——所以这里用响应体里的固定标记钉住它。
+//
+// WaitIdle 必须在 Records 之前：body 是事件派发之后异步补的，不等就会读到空串。
+func TestListenerResponseBodyBackfill(t *testing.T) {
+	_, tab := setup(t)
+	srv := startServers(t)
+	ctx := ctxOf(t, tab, 30*time.Second)
+
+	listenCtx, stop := context.WithCancel(tab.Ctx)
+	defer stop()
+
+	listener := tab.Listen("/api/get")
+	if err := listener.Start(listenCtx); err != nil {
+		t.Fatalf("启动监听失败：%v", err)
+	}
+	defer listener.Stop()
+
+	if err := tab.Navigate(ctx, srv.main.URL+"/api/get"); err != nil {
+		t.Fatalf("导航失败：%v", err)
+	}
+	listener.WaitIdle()
+
+	recs := listener.Records()
+	for _, r := range recs {
+		if !strings.Contains(r.URL, "/api/get") {
+			continue
+		}
+		if !strings.Contains(r.ResponseBody, `"ok":true`) {
+			t.Fatalf("响应体未被回填（fetchBodyAsync 失效？）：%q", r.ResponseBody)
+		}
+		return
+	}
+	t.Fatalf("未抓到 /api/get 记录，记录数 %d", len(recs))
+}
+
 // TestIsolatedContext 验证单浏览器内多上下文的 Cookie 隔离。
 func TestIsolatedContext(t *testing.T) {
 	browser, _ := setup(t)

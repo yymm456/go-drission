@@ -108,21 +108,32 @@ func (fe *FrameElement) String() string {
 
 // ---------- 操作 ----------
 
-// Click 在框架内触发元素点击（JS 语义，el.click()，不做可见性检查）。
+// runOp 执行一次「定位元素 → 执行 body → 校验返回值」的框架内操作。
 //
-// 元素不存在时返回 ErrElementNotFound——静默「成功」会让调用方以为点过了。
-func (fe *FrameElement) Click(ctx context.Context) error {
+// Click / SetValue 的函数体不同，但外壳完全一样：先按选择器取 el，取不到就返回
+// 'not found'，取到了再跑 body，最后交给 frameOpResult 翻译成 Go 错误。
+// 把外壳收在这里，两侧只需要关心自己的 body，也不会再出现「漏判 el 为空」的变体。
+//
+// body 是拿到非空 el 之后要跑的语句，须自带 return（成功返回 'ok'）。
+func (fe *FrameElement) runOp(ctx context.Context, action, body string) error {
 	expr, err := fe.frame.requireExpr(fe.sel)
 	if err != nil {
 		return err
 	}
-	v, err := fe.frame.eval(ctx, fmt.Sprintf(`
-(function(){ const el = %s; if (!el) return 'not found';
-  el.click(); return 'ok'; })()`, expr))
+	js := fmt.Sprintf(`(function(){ const el = %s; if (!el) return 'not found';
+  %s })()`, expr, body)
+	v, err := fe.frame.eval(ctx, js)
 	if err != nil {
 		return err
 	}
-	return frameOpResult(v, "点击", fe.sel)
+	return frameOpResult(v, action, fe.sel)
+}
+
+// Click 在框架内触发元素点击（JS 语义，el.click()，不做可见性检查）。
+//
+// 元素不存在时返回 ErrElementNotFound——静默「成功」会让调用方以为点过了。
+func (fe *FrameElement) Click(ctx context.Context) error {
+	return fe.runOp(ctx, "点击", "el.click(); return 'ok';")
 }
 
 // Text 返回框架内该元素的文本（innerText）。
@@ -139,7 +150,9 @@ func (fe *FrameElement) Text(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if v == nil {
-		return "", fmt.Errorf("%w: %s=%q", ErrElementNotFound, fe.sel.Mode(), fe.sel.String())
+		// 与标签页侧 firstNode 共用同一个「没命中」包装（noMatchError）：
+		// 同一种失败在两条通道上必须给出同一种文案。
+		return "", noMatchError(fe.sel)
 	}
 	if s, ok := v.(string); ok {
 		return s, nil
@@ -157,21 +170,8 @@ func (fe *FrameElement) Count(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	var js string
-	switch fe.sel.mode {
-	case modeXPath:
-		// count() 返回的是数字，必须请求 NUMBER_TYPE(1)；用 FIRST_ORDERED_NODE_TYPE(9)
-		// 会报 "The result is not a node set" 的 TypeError。
-		// %q 与下面 CSS 分支一致。XPath 里带双引号的属性值是常态
-		// （//div[@data-x="a"]），裸拼进 JS 的 "..." 字面量会把字符串提前截断，
-		// 整段脚本语法错误——表现出来是「Count 报错」而不是「数错了」，很难一眼看出是转义问题。
-		js = fmt.Sprintf(`document.evaluate(%q, document, null, 1, null).numberValue`, "count("+fe.sel.String()+")")
-	case modeCSS:
-		js = fmt.Sprintf(`document.querySelectorAll(%q).length`, fe.sel.String())
-	default:
-		// ID / JS path：语义上就是单个元素，不再当作 CSS 去 querySelectorAll
-		js = fmt.Sprintf(`(function(){ const el = %s; return el ? 1 : 0; })()`, fe.sel.jsExpr())
-	}
+	// 与 Element.Count 共用同一份「选择器 → 计数 JS」映射（见 selectorCountJS）。
+	js := selectorCountJS(fe.sel)
 
 	v, err := fe.frame.eval(ctx, js)
 	if err != nil {
@@ -193,18 +193,9 @@ func (fe *FrameElement) Count(ctx context.Context) (int, error) {
 // 后台节流影响；反过来说，只监听 keystroke 的组件不会被触发。
 // 元素不存在时返回 ErrElementNotFound。
 func (fe *FrameElement) SetValue(ctx context.Context, value string) error {
-	expr, err := fe.frame.requireExpr(fe.sel)
-	if err != nil {
-		return err
-	}
-	v, err := fe.frame.eval(ctx, fmt.Sprintf(`
-(function(){ const el = %s; if (!el) return 'not found';
-  el.focus(); el.value = %q;
+	body := fmt.Sprintf(`el.focus(); el.value = %q;
   el.dispatchEvent(new Event('input', {bubbles:true}));
   el.dispatchEvent(new Event('change', {bubbles:true}));
-  return 'ok'; })()`, expr, value))
-	if err != nil {
-		return err
-	}
-	return frameOpResult(v, "赋值", fe.sel)
+  return 'ok';`, value)
+	return fe.runOp(ctx, "赋值", body)
 }

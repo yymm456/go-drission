@@ -183,28 +183,15 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 // 会让这里的 Tabs() 在 Chrome 假死时永久挂起，调用方的 ctx 形同虚设（历史缺陷 BUG-07）。
 // 注意超时只能加在「等待预算」上，见 tabInitBudget 的说明。
 func (b *Browser) attachTarget(ctx context.Context, id target.ID, url string) (*Tab, error) {
-	// 在锁内取 rootCtx 快照：并发 Close 会把它置 nil，而 chromedp.NewContext(nil) 会 panic
-	rootCtx, err := b.connectedRootCtx()
+	// 派生 tab 上下文并完成 attach；首次 Run 与超时预算的细节见 newTabCtx。
+	tabCtx, cancel, err := b.newTabCtx(ctx, chromedp.WithTargetID(id))
 	if err != nil {
 		return nil, err
 	}
-	tabCtx, cancel := chromedp.NewContext(rootCtx, chromedp.WithTargetID(id))
-	budget, cancelBudget := tabInitBudget(ctx)
-	defer cancelBudget()
-	if err := runAbandonable(budget, tabCtx, func(runCtx context.Context) error {
-		return chromedp.Run(runCtx)
-	}); err != nil {
-		cancel()
-		return nil, err
-	}
-	tab := &Tab{
-		ID:      id,
-		Ctx:     tabCtx,
-		cancel:  cancel,
-		timeout: b.opts.defaultTimeout,
-		logger:  b.opts.logger,
-	}
+	tab := b.newTabHandle(tabCtx, id, cancel)
 	tab.setURL(url)
+	// 附着成功意味着浏览器里已有一个真实标签页，可以安全关闭锚点空白页（sync.Once 保证只关一次）。
+	b.closeAnchorOnce(ctx)
 	return tab, nil
 }
 

@@ -241,30 +241,50 @@ func waitTimeoutErr(what string, ctxErr, lastErr error) error {
 	return fmt.Errorf("%s 失败: %w（期间最后一次错误: %w）", what, ctxErr, lastErr)
 }
 
-// WaitURL 轮询等待当前 URL 包含指定子串，直到 ctx 结束
-func (t *Tab) WaitURL(ctx context.Context, substr string) error {
-	// 复用同一个 Ticker，而不是在循环里写 time.After：后者每轮都新建一个定时器，
-	// 等待期间旧定时器一直挂在运行时的定时器堆上。默认最长 30s ≈ 150 轮，白白制造垃圾。
+// pollWait 是三个轮询式等待（WaitURL / waitElementCount / Element.WaitText）共用的循环骨架。
+//
+// 它们只差「判什么条件」与「错误文案」，三份循环各写一遍等于把下面这套错误分诊规则
+// 复制了三份——而分诊规则恰恰是本库最容易改错的地方（见 waitFatalErr 的说明）。
+//
+// 语义：
+//   - probe 返回 (true, _) 即成功返回；err 只在未命中时才有意义；
+//   - probe 的错误命中 waitFatalErr（再等也不会变）→ 立即中止，文案 "<what> 失败: <err>"；
+//   - ctx 结束 → 用 waitTimeoutErr 拼「超时 + 期间最后一次错误」；
+//     notFound 为 true 时再套一层 ErrElementNotFound（「始终没出现」是调用方要 errors.Is 的语义）。
+func pollWait(ctx context.Context, what string, notFound bool, probe func() (bool, error)) error {
 	ticker := time.NewTicker(waitPollInterval)
 	defer ticker.Stop()
 
 	var lastErr error
 	for {
-		u, err := t.CurrentURL(ctx)
-		if err == nil && strings.Contains(u, substr) {
+		ok, err := probe()
+		if ok {
 			return nil
 		}
 		if waitFatalErr(err) {
-			return fmt.Errorf("等待 URL 包含 %q 失败: %w", substr, err)
+			return fmt.Errorf("%s 失败: %w", what, err)
 		}
 		lastErr = waitRecordErr(lastErr, err)
 
 		select {
 		case <-ctx.Done():
-			return waitTimeoutErr(fmt.Sprintf("等待 URL 包含 %q", substr), ctx.Err(), lastErr)
+			timeoutErr := waitTimeoutErr(what, ctx.Err(), lastErr)
+			if notFound {
+				return fmt.Errorf("%w: %w", ErrElementNotFound, timeoutErr)
+			}
+			return timeoutErr
 		case <-ticker.C:
 		}
 	}
+}
+
+// WaitURL 轮询等待当前 URL 包含指定子串，直到 ctx 结束
+func (t *Tab) WaitURL(ctx context.Context, substr string) error {
+	// 循环骨架与错误分诊规则见 pollWait（复用同一个 Ticker 而非每轮 time.After 的理由也在那里）。
+	return pollWait(ctx, fmt.Sprintf("等待 URL 包含 %q", substr), false, func() (bool, error) {
+		u, err := t.CurrentURL(ctx)
+		return err == nil && strings.Contains(u, substr), err
+	})
 }
 
 // waitElementCount 轮询等待选择器匹配到至少 n 个元素，直到 ctx 结束。
@@ -273,28 +293,11 @@ func (t *Tab) WaitURL(ctx context.Context, substr string) error {
 // 对外没有直接的 Tab 级入口——元素级等待统一走 el.Wait()，
 // 避免出现「同一个能力有两条调用路径」。
 func (t *Tab) waitElementCount(ctx context.Context, sel Selector, n int) error {
-	ticker := time.NewTicker(waitPollInterval)
-	defer ticker.Stop()
-
-	var lastErr error
-	for {
+	// notFound=true：超时时保留 ErrElementNotFound——「始终没出现」是调用方靠 errors.Is 判断的语义。
+	return pollWait(ctx, fmt.Sprintf("等待 %s 出现至少 %d 个元素", sel, n), true, func() (bool, error) {
 		count, err := t.Ele(sel).Count(ctx)
-		if err == nil && count >= n {
-			return nil
-		}
-		if waitFatalErr(err) {
-			return fmt.Errorf("等待 %s 出现至少 %d 个元素失败: %w", sel, n, err)
-		}
-		lastErr = waitRecordErr(lastErr, err)
-
-		select {
-		case <-ctx.Done():
-			// 保留 ErrElementNotFound：「始终没出现」是调用方靠 errors.Is 判断的语义。
-			return fmt.Errorf("%w: %w", ErrElementNotFound,
-				waitTimeoutErr(fmt.Sprintf("等待 %s 出现至少 %d 个元素", sel, n), ctx.Err(), lastErr))
-		case <-ticker.C:
-		}
-	}
+		return err == nil && count >= n, err
+	})
 }
 
 // ---------- 操作 ----------
@@ -349,11 +352,27 @@ func wrapNotFound(err error, sel Selector) error {
 	if err == nil {
 		return nil
 	}
+	return notFoundError(sel, err)
+}
+
+// noMatchError 是「选择器确实没匹配到东西」的纯版包装：没有底层 err 可挂。
+//
+// 与 notFoundError 共用同一段「%s=%q」文案——两处各写一份格式，改一处忘一处，
+// 调用方就会看到「同一个错误两种写法」。标签页侧（firstNode）与框架侧
+// （FrameElement.Text）都走这里。
+func noMatchError(sel Selector) error {
+	return fmt.Errorf("%w: %s=%q", ErrElementNotFound, sel.Mode(), sel.String())
+}
+
+// notFoundError 把「选择器没命中」的底层错误统一包装成 ErrElementNotFound（附选择器与原因）。
+// 调用方主动取消是决策，原样透传，不伪装成「没找到元素」。
+//
+// 文案由 noMatchError 产出后再缀「（等待元素超时）」，与纯版保持同一前缀。
+func notFoundError(sel Selector, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
-	return fmt.Errorf("%w: %s=%q（等待元素超时）: %w",
-		ErrElementNotFound, sel.Mode(), sel.String(), err)
+	return fmt.Errorf("%w（等待元素超时）: %w", noMatchError(sel), err)
 }
 
 // firstNode 取第一个匹配节点；没有匹配时返回 ErrElementNotFound，
@@ -361,18 +380,14 @@ func wrapNotFound(err error, sel Selector) error {
 func (t *Tab) firstNode(ctx context.Context, sel Selector) (*cdp.Node, error) {
 	nodes, err := t.nodes(ctx, sel)
 	if err != nil {
-		// 调用方主动取消是决策，原样返回，不要伪装成「没找到元素」
-		if errors.Is(err, context.Canceled) {
-			return nil, err
-		}
-		// chromedp 找不到节点时会一直重试到 ctx 到期，抛出的裸 deadline exceeded
-		// 完全看不出是「元素没出现」。统一包装成 ErrElementNotFound，
-		// 调用方既能用 errors.Is 判断，也能从文案直接看出是哪个选择器没命中。
-		return nil, fmt.Errorf("%w: %s=%q（等待元素超时）: %w",
-			ErrElementNotFound, sel.Mode(), sel.String(), err)
+		// 与 wrapNotFound 共用 notFoundError：包成 ErrElementNotFound，
+		// 调用方既能用 errors.Is 判断，也能从文案直接看出是哪个选择器没命中；
+		// 主动取消则原样透传。
+		return nil, notFoundError(sel, err)
 	}
 	if len(nodes) == 0 {
-		return nil, fmt.Errorf("%w: %s=%q", ErrElementNotFound, sel.Mode(), sel.String())
+		// 节点列表为空不是「等待超时」，没有底层 err 可挂，走纯版包装（与框架侧同一格式）。
+		return nil, noMatchError(sel)
 	}
 	return nodes[0], nil
 }

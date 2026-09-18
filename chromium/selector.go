@@ -125,3 +125,29 @@ func (s Selector) jsExpr() string {
 		return fmt.Sprintf("document.querySelector(%q)", s.expr)
 	}
 }
+
+// selectorCountJS 生成「统计该选择器命中多少个元素」的 JS 表达式。
+//
+// 与 jsExpr 一样收敛在 Selector 上：Element.Count 与 FrameElement.Count 走的是
+// 两条完全不同的通道（前者经 chromedp.Evaluate，后者在框架 isolated world 里
+// Runtime.evaluate），但「选择器 → 计数 JS」这一步必须完全一致。
+// 早期两边各写一份 mode 分支，case 顺序与取值（sel.expr / sel.String()）都不同，
+// 只是恰好等价——一旦有一边新增模式，另一边会静默落进 default，数错个数还不报错。
+//
+// 语义：
+//   - XPath：count(...) 返回数字，必须请求 NUMBER_TYPE(1)；表达式用 %q 拼进 JS，
+//     XPath 里带双引号的属性值（//div[@data-x="a"]）才不会把字符串提前截断。
+//   - CSS：querySelectorAll(...).length。
+//   - ID / JS path：语义上是「单个元素」，命中 1、未命中 0。
+func selectorCountJS(sel Selector) string {
+	switch sel.mode {
+	case modeXPath:
+		return fmt.Sprintf(`document.evaluate(%q, document, null, 1, null).numberValue`,
+			"count("+sel.expr+")")
+	case modeCSS:
+		return fmt.Sprintf(`document.querySelectorAll(%q).length`, sel.expr)
+	default:
+		// modeID / modeJSPath
+		return fmt.Sprintf(`(function(){ const el = %s; return el ? 1 : 0; })()`, sel.jsExpr())
+	}
+}
