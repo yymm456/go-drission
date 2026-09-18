@@ -60,10 +60,27 @@ type Browser struct {
 	mu   sync.Mutex
 	tabs []*Tab
 
-	// newTabMu 只保护 NewTab 的「建 target → 比对列表定位新 ID」这一段。
-	// 该流程依赖前后两次全局 target 快照，必须串行；但它与 tabs 的状态无关，
-	// 所以独立成一把锁，避免新建标签页时把 Tabs/GetTab 一起堵住。
-	newTabMu sync.Mutex
+	// targetListMu 串行「一切会拿着 target 快照去改动 b.tabs 的操作」：
+	// NewTab 的「建 target → 比对前后快照定位新 ID → 登记」，以及 Tabs 的
+	// 「取快照 → syncTabs」。
+	//
+	// 为什么两者必须互斥（这不是性能优化，是正确性要求）：
+	// syncTabs 会把「快照里没有、但 b.tabs 里还在」的标签页当成已关闭，调用它的
+	// cancel —— 而 chromedp 的上下文取消会**真的 CloseTarget**（见 chromedp.go 里
+	// ctx.Done 分支的 target.CloseTarget）。若不互斥，就会出现这样的交错：
+	//
+	//	Tabs:   取快照（此时新标签页尚未创建，快照里没有 X）
+	//	NewTab: createTarget 建出 X，并把 X 登记进 b.tabs，然后返回
+	//	Tabs:   拿旧快照跑 syncTabs → b.tabs 里的 X 不在快照中 → cancel → 把 X 关掉
+	//
+	// 结果是「一次只读的 Tabs() 会把并发新建的标签页销毁掉」，且此后永远不再出现。
+	// 互斥之后这个交错不可能发生：NewTab 释放锁时 target 与 b.tabs 已经一致，
+	// 因此 Tabs 的快照必然包含 b.tabs 里的每一个 target。
+	//
+	// 代价只是 NewTab 与 Tabs 互相短暂排队（两三次 getTargets + 一次 createTarget，
+	// 毫秒级），换来的是「读操作绝不销毁资源」。b.tabs 自身的读写仍由 mu 保护，
+	// 锁序为 targetListMu → mu。
+	targetListMu sync.Mutex
 
 	// connMu 保护连接状态字段，与 mu（保护 tabs）分开，避免连接握手长时间持锁
 	connMu    sync.Mutex
@@ -387,10 +404,18 @@ func (b *Browser) guard() error {
 //
 // 会在锁外查询 target 列表并附着新出现的标签页，避免端口卡顿时把
 // 所有标签页操作一起串行卡住（见 syncTabs 的说明）。
+//
+// 「取快照 + 同步」整体与 NewTab 互斥（targetListMu）：syncTabs 会把不在快照里的
+// 标签页 cancel 掉，而 cancel 等于 CloseTarget；不互斥的话，一次 Tabs() 就可能
+// 把并发新建的标签页真的关掉。详见 targetListMu 字段的注释。
 func (b *Browser) Tabs(ctx context.Context) ([]*Tab, error) {
 	if err := b.guard(); err != nil {
 		return nil, err
 	}
+
+	b.targetListMu.Lock()
+	defer b.targetListMu.Unlock()
+
 	infos, err := b.listTargets(ctx)
 	if err != nil {
 		return nil, err
@@ -401,9 +426,11 @@ func (b *Browser) Tabs(ctx context.Context) ([]*Tab, error) {
 // NewTab 新建一个标签页并托管
 //
 // 全程在锁外做 I/O（HTTP 查询 + CDP 往返），只在最后登记标签页时短暂持锁；
-// 但「新建 target → 比对前后 target 列表定位新 ID」这一段必须串行，
-// 否则两个并发的 NewTab 会互相把对方的新 target 认成自己的，因此用 newTabMu 单独保护
-// （它不保护 tabs，所以不会和 Tabs/GetTab 争锁）。
+// 但「新建 target → 比对前后 target 列表定位新 ID → 登记进 b.tabs」整段必须与
+// Tabs()（取快照 + syncTabs）互斥，否则两个并发的 NewTab 会互相把对方的新 target
+// 认成自己的，而且 Tabs() 还会拿旧快照把刚建好的 target 当成已关闭取消掉
+// （cancel == CloseTarget）。因此用 targetListMu 保护——它不保护 b.tabs 的状态
+// （那是 mu 的职责），所以不会和 GetTab 之类只读 b.tabs 的路径争锁。
 func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
 	// 在锁内取 rootCtx 快照：并发 Close 会把它置 nil，chromedp.NewContext(nil) 会 panic
 	rootCtx, err := b.connectedRootCtx()
@@ -411,8 +438,8 @@ func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
 		return nil, err
 	}
 
-	b.newTabMu.Lock()
-	defer b.newTabMu.Unlock()
+	b.targetListMu.Lock()
+	defer b.targetListMu.Unlock()
 
 	before, err := b.listTargets(ctx)
 	if err != nil {
