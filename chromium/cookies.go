@@ -59,12 +59,22 @@ func ParseCookiesJSON(data []byte) ([]Cookie, error) {
 //
 // CDP 对缺字段只会回一句 "Invalid cookie fields"，看不出是哪一条、
 // 缺了哪个字段；批量注入几十条时尤其难查。这里提前指出来。
+//
+// 三项检查与 errors.go 中 ErrInvalidCookie 的注释一一对应：缺 name、缺 domain、
+// SameSite=None 却没有 Secure。
 func validateCookie(c Cookie, idx int) error {
 	if strings.TrimSpace(c.Name) == "" {
 		return fmt.Errorf("%w: 第 %d 条缺少 name", ErrInvalidCookie, idx)
 	}
 	if strings.TrimSpace(c.Domain) == "" {
 		return fmt.Errorf("%w: Cookie %q 缺少 domain（CDP 需要 domain 或 url 才能落盘）",
+			ErrInvalidCookie, c.Name)
+	}
+	// Chrome 依 RFC 6265bis 直接丢弃「SameSite=None 但没有 Secure」的 Cookie，
+	// 但 Network.setCookie 本身不报错——库若照旧返回成功，调用方拿到的是
+	// 「全部注入成功」的假象，登录态却少了几条。这里提前拦成显式错误。
+	if strings.EqualFold(strings.TrimSpace(c.SameSite), "None") && !c.Secure {
+		return fmt.Errorf("%w: Cookie %q 的 SameSite=None 必须带 Secure（浏览器会拒收）",
 			ErrInvalidCookie, c.Name)
 	}
 	return nil

@@ -775,7 +775,7 @@ body 已一次性读入内存并自动替换 `resp.Body`，**可反复读取**�
 | `Bytes() []byte` | 原始字节 |
 | `Text() string` | 按 UTF-8 转字符串 |
 | `JSON(v any) error` | 解析 JSON |
-| `OK() bool` | 状态码 < 400 |
+| `OK() bool` | 状态码为 2xx |
 | `ContentType() string` | 响应类型（已去掉参数） |
 | `SaveFile(path) error` | 直接存盘（父目录自动创建，目录 0750 / 文件 0640） |
 | 内嵌 `*http.Response` | `StatusCode` / `Header` / `Request` 等原样可用 |

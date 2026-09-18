@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -43,10 +44,18 @@ type Browser struct {
 	rootCtx      context.Context
 	rootCancel   context.CancelFunc
 	rootTargetID target.ID
-	launched     bool
-	chromeCmd    *exec.Cmd    // 启动的 Chrome 进程，Close 时用于杀进程
-	lock         *profileLock // 数据目录排他锁，仅自己启动 Chrome 时持有
-	closed       bool
+	// defaultBrowserContextID 是「默认浏览器上下文」的 ID，Connect 时从 rootCtx 的
+	// 锚点 target 上取一次，之后只读（与 rootTargetID 同一套约定）。
+	//
+	// 为什么要存它：CDP 的 Target.getTargets 会给每个 target 带上 browserContextId，
+	// 但**默认上下文的 ID 不一定是空串**——实测 Chrome 会给默认上下文也分配一个 GUID，
+	// 扩展页面、浏览器内部页面与普通页面共用它。于是「只收 BrowserContextID == ""」
+	// 会把所有页面一起滤掉；改成「等于锚点所在上下文」则新旧行为都正确。
+	defaultBrowserContextID cdp.BrowserContextID
+	launched                bool
+	chromeCmd               *exec.Cmd    // 启动的 Chrome 进程，Close 时用于杀进程
+	lock                    *profileLock // 数据目录排他锁，仅自己启动 Chrome 时持有
+	closed                  bool
 
 	mu   sync.Mutex
 	tabs []*Tab
@@ -131,6 +140,21 @@ func (b *Browser) removeContext(name string) {
 	delete(b.contexts, name)
 }
 
+// connectedRootCtx 取一次「已连接的常驻上下文」快照，并把 rootCtx 一起带出来。
+//
+// 与 guard 的差别就在这个 rootCtx：调用方紧接着要拿它去 chromedp.NewContext 派生
+// 子上下文，而并发的 Close 会把 rootCtx 置 nil——chromedp.NewContext(nil) 内部
+// 会 context.WithCancel(nil) 并直接 panic。所以快照必须在锁内取，且与派生紧挨着，
+// 否则 guard 通过之后 Close 仍可能插进来。
+func (b *Browser) connectedRootCtx() (context.Context, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := b.ensureConnected(); err != nil {
+		return nil, err
+	}
+	return b.rootCtx, nil
+}
+
 // boundedRootCtx 基于常驻 rootCtx 派生一个运行上下文：既携带 browser 级 CDP 路由信息，
 // 又受调用方 ctx 的取消与超时约束。browser 级命令必须在 rootCtx 分支上执行（依赖
 // FromContext(c).Browser 路由），但直接用无超时的 rootCtx 会在 Chrome 卡死时永久阻塞。
@@ -139,14 +163,23 @@ func (b *Browser) removeContext(name string) {
 // 调用方 ctx 被取消时同步取消。返回的 cancel 必须由调用方 defer 调用。
 // 取消 runCtx 只结束本次调用，不影响 rootCtx 上的 browser 长连接
 // （该连接的生命周期绑定在 initRootContext 首次 Run 的 rootCtx 上）。
+//
+// 与 Close 并发（rootCtx 已被置 nil）时返回一个立即结束的上下文：后续 chromedp.Run
+// 会以错误返回，而不是对 nil 调 context.WithTimeout 直接 panic。
 func (b *Browser) boundedRootCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	parent := b.rootCtx
+	if parent == nil {
+		dead, cancel := context.WithCancel(ctx)
+		cancel()
+		return dead, noopCancel
+	}
 	d := defaultCDPTimeout
 	if dl, ok := ctx.Deadline(); ok {
 		if until := time.Until(dl); until < d {
 			d = until
 		}
 	}
-	runCtx, cancel := context.WithTimeout(b.rootCtx, d)
+	runCtx, cancel := context.WithTimeout(parent, d)
 	// runCtx 的父是 rootCtx 而不是 ctx，调用方对 ctx 的取消传导不过来，得自己接上。
 	// AfterFunc 正好做这件事，且 stop() 能立刻解除注册——比常驻一个 select goroutine 干净。
 	stop := context.AfterFunc(ctx, cancel)
@@ -154,6 +187,29 @@ func (b *Browser) boundedRootCtx(ctx context.Context) (context.Context, context.
 		stop()
 		cancel()
 	}
+}
+
+// tabInitBudget 返回「建立标签页会话」（新建 / 附着 target）这一步的等待预算：
+// min(调用方剩余时间, defaultCDPTimeout)。
+//
+// 它只能当 runAbandonable 的 watchCtx 用，**绝不能**直接拿去做 chromedp.Run：
+// chromedp 会在 attach 时把 Target 的事件分发 goroutine 绑到传入的 ctx 上
+// （见 chromedp.Context.attachTarget 里的 `go c.Target.run(ctx)`）。那个 ctx 若是
+// 一个会被取消 / 超时的子上下文，标签页之后所有命令都会永远等不到应答——
+// 表现为「标签页建出来了、句柄也拿到了，但每个操作都卡到自己的超时」。
+// 这一点已用真实 Chrome 复现过：给 attach 套 30s 超时子上下文后，导航直接卡满 30s。
+//
+// 正确做法是把 Run 留在长生命周期的 tabCtx 上，只让调用方按这个预算决定
+// 「放弃等待」——Chrome 无响应时调用方不会被永久挂住（历史缺陷 BUG-07），
+// 标签页本身也不受影响。
+func tabInitBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := defaultCDPTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if until := time.Until(dl); until < d {
+			d = until
+		}
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 // Port 返回当前 Browser 使用的调试端口
@@ -309,6 +365,12 @@ func (b *Browser) initRootContext(ctx context.Context) error {
 	})
 	if info != nil {
 		b.rootTargetID = info.TargetID
+		// 锚点 target 就落在默认上下文里，它的 browserContextId 即默认上下文的 ID。
+		// 这一步失败（info == nil）会让 listTargets 无法排除浏览器自身的锚点页面，
+		// 因此单独告警，便于定位。
+		b.defaultBrowserContextID = info.BrowserContextID
+	} else {
+		b.opts.logger.Warn("未能读取锚点 target 信息，标签页列表可能包含锚点空白页")
 	}
 	return nil
 }
@@ -333,7 +395,7 @@ func (b *Browser) Tabs(ctx context.Context) ([]*Tab, error) {
 	if err != nil {
 		return nil, err
 	}
-	return b.syncTabs(infos)
+	return b.syncTabs(ctx, infos)
 }
 
 // NewTab 新建一个标签页并托管
@@ -343,7 +405,9 @@ func (b *Browser) Tabs(ctx context.Context) ([]*Tab, error) {
 // 否则两个并发的 NewTab 会互相把对方的新 target 认成自己的，因此用 newTabMu 单独保护
 // （它不保护 tabs，所以不会和 Tabs/GetTab 争锁）。
 func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
-	if err := b.guard(); err != nil {
+	// 在锁内取 rootCtx 快照：并发 Close 会把它置 nil，chromedp.NewContext(nil) 会 panic
+	rootCtx, err := b.connectedRootCtx()
+	if err != nil {
 		return nil, err
 	}
 
@@ -356,8 +420,14 @@ func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
 	}
 
 	// 从常驻 rootCtx 派生子上下文：子上下文共享 browser 连接，Run 时通过 createTarget 新建标签页
-	tabCtx, cancel := chromedp.NewContext(b.rootCtx)
-	if err := chromedp.Run(tabCtx); err != nil {
+	tabCtx, cancel := chromedp.NewContext(rootCtx)
+	// 超时加在「等多久」上，不能加在 tabCtx 自己身上（理由见 tabInitBudget）。
+	// Run 留在长生命周期的 tabCtx 上，调用方只按预算放弃等待。
+	budget, cancelBudget := tabInitBudget(ctx)
+	defer cancelBudget()
+	if err := runAbandonable(budget, tabCtx, func(runCtx context.Context) error {
+		return chromedp.Run(runCtx)
+	}); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -445,6 +515,10 @@ func (b *Browser) CloseTab(ctx context.Context, tab *Tab) {
 	if chromedp.FromContext(ctx) == nil {
 		runCtx = b.rootCtx
 	}
+	// 同样套一层默认超时：Chrome 无响应时 CloseTab 不该把调用方永久挂住
+	// （与库内其它 browser 级调用的做法一致，见 BUG-07 一节的说明）。
+	runCtx, cancelRun := withDefaultTimeout(runCtx, defaultCDPTimeout)
+	defer cancelRun()
 	_ = chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return target.CloseTarget(tab.ID).Do(ctx)
 	}))
@@ -567,9 +641,12 @@ func OpenPage(ctx context.Context, port int, opts ...Option) (*Browser, *Tab, er
 
 		// 在锁外关闭其他标签，避免长时间持锁
 		for _, t := range others {
-			_ = chromedp.Run(t.Ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+			// 套默认超时，理由同 CloseTab
+			closeCtx, cancelClose := withDefaultTimeout(t.Ctx, defaultCDPTimeout)
+			_ = chromedp.Run(closeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				return target.CloseTarget(t.ID).Do(ctx)
 			}))
+			cancelClose()
 			if t.cancel != nil {
 				t.cancel()
 			}

@@ -2,6 +2,7 @@ package chromium
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/chromedp/chromedp"
 )
@@ -71,8 +72,13 @@ func (s Selector) Mode() string {
 	}
 }
 
-// Empty 判断选择器是否为空（未构造或传了空字符串）。
-func (s Selector) Empty() bool { return s.expr == "" }
+// Empty 判断选择器是否为空（未构造、传了空字符串，或只有空白字符）。
+//
+// 判空必须带 TrimSpace：`CSS(prefix + suffix)` 在变量为空时很容易拼出 "   "，
+// 它既不是空串也定位不到任何东西，直接发给浏览器只会得到
+// 「'   ' is not a valid selector」这种底层语法错误——调用方看不出是自己漏传了参数。
+// 这里只用于判定、不改写原表达式：JS 模式的表达式理论上可以含前导空白。
+func (s Selector) Empty() bool { return strings.TrimSpace(s.expr) == "" }
 
 // validate 在发起 CDP 调用之前拦住空选择器。
 //

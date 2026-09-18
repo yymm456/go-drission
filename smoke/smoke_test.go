@@ -889,3 +889,124 @@ func TestScreenshot(t *testing.T) {
 		t.Fatal("截图文件为空")
 	}
 }
+
+// ------------------------------------------------- 本轮回归（缺陷报告 BUG-04 / BUG-06）
+
+// TestElementCountUnmatchedAcrossModes 守住 Element.Count 的「未命中」语义统一。
+//
+// Count 的文档写明「Count 为 0 是正常返回值（不是错误）」，但早期实现里只有 CSS
+// 分支走 JS 求值，XPath / ID 走 chromedp.Nodes——而 chromedp 的节点查询在命中前
+// 会一直重试到 ctx 到期，于是未命中变成「白等一个完整超时再报错」。
+// 这里同时钉住结果（0/nil）与耗时（不能又在等超时）。
+func TestElementCountUnmatchedAcrossModes(t *testing.T) {
+	_, tab := setup(t)
+	srv := startServers(t)
+	gotoMain(t, tab, srv)
+	ctx := ctxOf(t, tab, 15*time.Second)
+
+	// 命中：四种定位方式都要数得对
+	hits := []struct {
+		name string
+		el   *chromium.Element
+		want int
+	}{
+		{"css", tab.EleCSS(".item"), 3},
+		{"xpath", tab.EleXPath("//div[@class='item']"), 3},
+		{"id", tab.EleID("title"), 1},
+		{"jspath", tab.EleJS("document.querySelector('.item')"), 1},
+	}
+	for _, h := range hits {
+		n, err := h.el.Count(ctx)
+		if err != nil || n != h.want {
+			t.Errorf("%s 命中 Count = %d, %v；期望 %d, nil", h.name, n, err, h.want)
+		}
+	}
+
+	// 未命中：必须是 0/nil，且不能白等一个完整超时
+	misses := []struct {
+		name string
+		el   *chromium.Element
+	}{
+		{"css", tab.EleCSS("#no-such-element")},
+		{"xpath", tab.EleXPath("//div[@id='no-such-element']")},
+		{"id", tab.EleID("no-such-element")},
+		{"jspath", tab.EleJS("null")},
+	}
+	for _, m := range misses {
+		start := time.Now()
+		// 只给 3s 上限：修复前 XPath / ID 会一直重试到它到期
+		n, err := m.el.Count(ctxOf(t, tab, 3*time.Second))
+		elapsed := time.Since(start)
+		if err != nil || n != 0 {
+			t.Errorf("%s 未命中 Count = %d, %v；期望 0, nil", m.name, n, err)
+		}
+		if elapsed > 2*time.Second {
+			t.Errorf("%s 未命中的 Count 耗时 %v，说明又在等 ctx 超时", m.name, elapsed)
+		}
+	}
+}
+
+// TestIsolatedContextTabNotManagedByBrowser 守住「隔离上下文内的标签页被 Browser 重复托管」。
+//
+// 早期 syncTabs 走 HTTP /json 取 target 列表，而该端点不返回 browserContextId：
+// 隔离上下文里的页面也被附着成 Browser 级 *Tab，同一个 target 被两套管理器各持一份，
+// GetTab / LatestTab 会返回隔离上下文里的页面。现在改走 CDP Target.getTargets
+// 并只收默认上下文的 page，隔离上下文的标签页归 BrowserContext 独管。
+func TestIsolatedContextTabNotManagedByBrowser(t *testing.T) {
+	b, _ := setup(t)
+	ctx := ctxOf(t, sharedTab, 60*time.Second)
+
+	bc, err := b.Context(ctx, fmt.Sprintf("smoke_probe_%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("创建隔离上下文失败：%v", err)
+	}
+	defer bc.Close()
+
+	tabInCtx, err := bc.NewTab(ctx)
+	if err != nil {
+		t.Fatalf("隔离上下文内新建标签页失败：%v", err)
+	}
+
+	assertNotManaged := func(where string) {
+		t.Helper()
+		tabs, tabsErr := b.Tabs(ctx)
+		if tabsErr != nil {
+			t.Fatalf("%s 读取 Browser.Tabs 失败：%v", where, tabsErr)
+		}
+		for _, tl := range tabs {
+			if tl.ID == tabInCtx.ID {
+				t.Fatalf("%s：隔离上下文内的标签页 %s 不应出现在 Browser.Tabs 里", where, tabInCtx.ID)
+			}
+		}
+	}
+	assertNotManaged("新建隔离标签页后")
+
+	// LatestTab 也不能返回隔离上下文里的页面
+	if latest, latestErr := b.LatestTab(ctx); latestErr == nil && latest.ID == tabInCtx.ID {
+		t.Fatal("Browser.LatestTab 返回了隔离上下文里的标签页")
+	}
+
+	// 默认上下文里新建的标签页仍要被正常托管（别把正常路径一起修坏）
+	defTab, err := b.NewTab(ctx)
+	if err != nil {
+		t.Fatalf("默认上下文新建标签页失败：%v", err)
+	}
+	defer b.CloseTab(ctx, defTab)
+
+	found := false
+	tabs, err := b.Tabs(ctx)
+	if err != nil {
+		t.Fatalf("读取 Browser.Tabs 失败：%v", err)
+	}
+	for _, tl := range tabs {
+		switch tl.ID {
+		case tabInCtx.ID:
+			t.Fatalf("隔离上下文标签页不应出现在 Browser.Tabs 里：%s", tabInCtx.ID)
+		case defTab.ID:
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("默认上下文新建的标签页 %s 应被 Browser 托管", defTab.ID)
+	}
+}

@@ -27,8 +27,6 @@ var noProxyTransport = &http.Transport{
 
 // noProxyClient 是访问本机 CDP HTTP 端点（/json、/json/version）统一使用的 client。
 // 复用同一个实例以便连接被复用；超时策略与 isPortAlive 保持一致。
-var noProxyClient = &http.Client{Timeout: 5 * time.Second, Transport: noProxyTransport}
-
 // isPortAlive 判断指定端口上是否有一个可用的 Chrome DevTools 端点。
 // 探测过程受 ctx 约束：ctx 取消或超时立即返回 false，不会拖慢调用方。
 func isPortAlive(ctx context.Context, port int) bool {

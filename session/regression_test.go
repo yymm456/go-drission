@@ -2,10 +2,14 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 )
@@ -399,14 +403,14 @@ func TestMaxBodySize(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 默认不限：正常读回完整 body
+	// 默认 32MB（见 defaultMaxBodySize）：64KB 的响应远未触顶，应完整读回
 	s := New()
-	if s.MaxBodySize() != 0 {
-		t.Fatalf("默认应为不限，实际 %d", s.MaxBodySize())
+	if s.MaxBodySize() != defaultMaxBodySize {
+		t.Fatalf("默认上限应为 %d（32MB），实际 %d", defaultMaxBodySize, s.MaxBodySize())
 	}
 	resp, err := s.Get(ctx, srv.URL)
 	if err != nil {
-		t.Fatalf("默认不限时不应报错：%v", err)
+		t.Fatalf("未触顶时不应报错：%v", err)
 	}
 	if len(resp.Bytes()) != bodySize {
 		t.Fatalf("body 长度 = %d，期望 %d", len(resp.Bytes()), bodySize)
@@ -461,5 +465,214 @@ func TestClientReturnsCopy(t *testing.T) {
 	c.Timeout = time.Hour // 改拷贝
 	if got := s.Client().Timeout; got != 5*time.Second {
 		t.Fatalf("改动拷贝污染了会话配置：Timeout = %v", got)
+	}
+}
+
+// TestDefaultMaxBodySizeMatchesDoc 守住「文档承诺默认 32MB、实现却是 0（不限）」这个缺口。
+//
+// README 四处与 CODE_REVIEW 都写着默认 32MB，而 session.New 曾漏掉默认值赋值：
+// maxBodySize 落到零值 0，而 newResponse 只在 maxBody > 0 时才限流——承诺的 OOM 保护
+// 实际并不存在。这里既钉住默认值，也端到端确认默认会话真的会拒绝超限响应。
+func TestDefaultMaxBodySizeMatchesDoc(t *testing.T) {
+	if got := New().MaxBodySize(); got != defaultMaxBodySize {
+		t.Fatalf("默认上限 = %d，期望 %d（32MB）", got, defaultMaxBodySize)
+	}
+
+	// 分块写出「略多于默认上限」的正文，避免在测试里额外备一份 32MB 缓冲。
+	const chunk = 256 << 10
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		buf := make([]byte, chunk)
+		for written := int64(0); written <= defaultMaxBodySize; written += chunk {
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	if _, err := New().Get(context.Background(), srv.URL); !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("默认会话读到超过 32MB 的响应应报 ErrBodyTooLarge，实际 %v", err)
+	}
+}
+
+// TestJarLoadRejectsPublicSuffixCookie 守住跨站 Cookie 投毒的第二条入口。
+//
+// 公共后缀校验早期只内联在 Jar.SetCookies（响应路径）里，Jar.Load（文件导入路径）
+// 完全没有：一份来路不明的 cookies.json 里放一条 Domain=".com"，之后所有 .com 域
+// 的请求都会带上它。这里把两条写入路径一起钉住。
+func TestJarLoadRejectsPublicSuffixCookie(t *testing.T) {
+	poison := []CookieItem{
+		{Name: "p1", Value: "1", Domain: ".com", Path: "/"},
+		{Name: "p2", Value: "1", Domain: ".org", Path: "/"},
+		{Name: "p3", Value: "1", Domain: ".co.uk", Path: "/"},
+		{Name: "p4", Value: "1", Domain: "github.io", Path: "/"},
+		{Name: "p5", Value: "1", Domain: "com", Path: "/"},
+	}
+
+	j := NewJar()
+	if n := j.Load(poison); n != 0 {
+		t.Fatalf("Load 应拒收全部公共后缀 Cookie，实际写入 %d 条", n)
+	}
+	if n := j.Len(); n != 0 {
+		t.Fatalf("容器内应为空，实际 %d 条", n)
+	}
+	if got := j.Cookies(regURL(t, "https://bank.com/")); len(got) != 0 {
+		t.Fatalf("bank.com 不应收到被投毒的 Cookie，实际 %v", got)
+	}
+
+	// 同一批数据经 JSON 导入同样要被拦下
+	data, err := json.Marshal(poison)
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	j2 := NewJar()
+	if err := j2.ImportJSON(data); err != nil {
+		t.Fatalf("ImportJSON 失败：%v", err)
+	}
+	if n := j2.Len(); n != 0 {
+		t.Fatalf("ImportJSON 应拒收公共后缀 Cookie，实际 %d 条", n)
+	}
+
+	// 文件入口（Session.LoadCookies 走的就是它）
+	path := t.TempDir() + "/poison.json"
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("写临时 Cookie 文件失败：%v", err)
+	}
+	j3 := NewJar()
+	if err := j3.LoadFile(path); err != nil {
+		t.Fatalf("LoadFile 失败：%v", err)
+	}
+	if n := j3.Len(); n != 0 {
+		t.Fatalf("LoadFile 应拒收公共后缀 Cookie，实际 %d 条", n)
+	}
+
+	// Session 级便捷入口
+	s := New()
+	s.SetCookie(CookieItem{Name: "p", Value: "1", Domain: ".com", Path: "/"})
+	if n := s.SetCookies(poison); n != 0 {
+		t.Fatalf("Session.SetCookies 应拒收公共后缀 Cookie，实际写入 %d 条", n)
+	}
+	if n := len(s.AllCookies()); n != 0 {
+		t.Fatalf("会话内应为空，实际 %d 条", n)
+	}
+
+	// 合法的上级域不能被误杀
+	if n := NewJar().Load([]CookieItem{
+		{Name: "sid", Value: "v", Domain: ".example.com", Path: "/"},
+	}); n != 1 {
+		t.Fatalf("合法域级 Cookie 应被接受，实际 %d 条", n)
+	}
+	// IP 字面量不能被公共后缀表误杀
+	if n := NewJar().Load([]CookieItem{
+		{Name: "ip", Value: "v", Domain: "127.0.0.1", Path: "/"},
+	}); n != 1 {
+		t.Fatalf("IP 域 Cookie 应被接受，实际 %d 条", n)
+	}
+
+	// 对照：响应路径仍然拒绝（确认既有行为没被改坏）
+	j4 := NewJar()
+	j4.SetCookies(regURL(t, "https://evil.example.com/x"),
+		[]*http.Cookie{{Name: "p", Value: "1", Domain: "com", Path: "/"}})
+	if n := j4.Len(); n != 0 {
+		t.Fatalf("对照失效：SetCookies 应拒收 Domain=com，实际 %d 条", n)
+	}
+}
+
+// TestJarLoadRejectsPartitionedWithoutSecure 守住 CHIPS 分区 Cookie 的导入校验。
+//
+// README 写明分区 Cookie 的组合是 Secure + SameSite=None + Partitioned，而 Load
+// 此前完全不看 Partitioned：缺 Secure 的条目浏览器会拒收，于是出现「导入报成功、
+// 登录态其实不完整」。
+func TestJarLoadRejectsPartitionedWithoutSecure(t *testing.T) {
+	j := NewJar()
+	if n := j.Load([]CookieItem{
+		{Name: "chips", Value: "v", Domain: ".example.com", Path: "/", Partitioned: true},
+	}); n != 0 {
+		t.Fatalf("Partitioned 且缺 Secure 应被拒收，实际写入 %d 条", n)
+	}
+	// Secure + Partitioned 是合法组合，不能被误杀
+	if n := j.Load([]CookieItem{
+		{Name: "chips", Value: "v", Domain: ".example.com", Path: "/", Secure: true, Partitioned: true},
+	}); n != 1 {
+		t.Fatalf("Secure + Partitioned 应被接受，实际写入 %d 条", n)
+	}
+}
+
+// TestCanonicalHostHandlesIPv6 守住 IPv6 主机的 Cookie 域名解析。
+//
+// 早期 canonicalHost 手写「含冒号就按端口截断」：裸 "::1" 被截成空串（Cookie 被
+// 静默丢弃），"[::1]:8080" 只剥掉前半个方括号、残留 "::1]:8080"。
+// 改用 net.SplitHostPort 后两种形态都要正确，IPv4 / 域名带端口的旧行为也不能变。
+func TestCanonicalHostHandlesIPv6(t *testing.T) {
+	cases := map[string]string{
+		"[::1]:8080":       "::1",
+		"::1":              "::1",
+		"[2001:db8::1]":    "2001:db8::1",
+		"example.com:8080": "example.com",
+		"Example.COM":      "example.com",
+		".example.com":     "example.com",
+		"127.0.0.1:8080":   "127.0.0.1",
+	}
+	for in, want := range cases {
+		if got := canonicalHost(in); got != want {
+			t.Errorf("canonicalHost(%q) = %q，期望 %q", in, got, want)
+		}
+	}
+
+	// 端到端：IPv6 主机写入的 Cookie，Domain 不该带端口或残留方括号
+	j := NewJar()
+	j.SetCookies(regURL(t, "http://[::1]:8080/path"),
+		[]*http.Cookie{{Name: "sid", Value: "1", Path: "/"}})
+	items := j.All()
+	if len(items) != 1 {
+		t.Fatalf("IPv6 主机应写入 1 条，实际 %d 条", len(items))
+	}
+	if items[0].Domain != "::1" {
+		t.Fatalf("Cookie Domain = %q，期望 ::1（不含端口与方括号）", items[0].Domain)
+	}
+
+	// 导入裸 IPv6 域名不能再被静默丢弃，且要能被 IPv6 回环命中
+	j2 := NewJar()
+	if n := j2.Load([]CookieItem{{Name: "sid", Value: "1", Domain: "::1", Path: "/"}}); n != 1 {
+		t.Fatalf("Load(Domain=\"::1\") 应写入 1 条，实际 %d 条", n)
+	}
+	if got := j2.Cookies(regURL(t, "http://[::1]:8080/")); len(got) != 1 {
+		t.Fatalf("IPv6 回环应命中该 Cookie，实际 %d 条", len(got))
+	}
+}
+
+// TestMaxBodySizeMaxInt64NoOverflow 守住「上限写成 math.MaxInt64 时正文被整个吞掉」。
+//
+// 早期用 io.LimitReader(body, maxBody+1) 判超限：maxBody 为 MaxInt64 时 +1 回绕成
+// 负数，LimitReader 遇负数立即返回 EOF——正文读成空，且因为 len(body) 不大于 maxBody，
+// 连错误都不报。修复后改成「读满上限再单独探一个字节」，这里连带把边界钉住。
+func TestMaxBodySizeMaxInt64NoOverflow(t *testing.T) {
+	const body = "hello-body"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := New(WithMaxBodySize(math.MaxInt64)).Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("MaxInt64 上限下请求失败：%v", err)
+	}
+	if got := resp.Text(); got != body {
+		t.Fatalf("正文 = %q，期望 %q（读成空说明 maxBody+1 溢出了）", got, body)
+	}
+
+	// 边界：恰好等于上限通过，多 1 字节即报 ErrBodyTooLarge
+	ten := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "0123456789")
+	}))
+	defer ten.Close()
+
+	if _, err := New(WithMaxBodySize(10)).Get(context.Background(), ten.URL); err != nil {
+		t.Fatalf("恰好等于上限时不应报错：%v", err)
+	}
+	if _, err := New(WithMaxBodySize(9)).Get(context.Background(), ten.URL); !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("超出上限 1 字节应报 ErrBodyTooLarge，实际 %v", err)
 	}
 }

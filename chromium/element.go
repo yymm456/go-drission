@@ -191,24 +191,38 @@ func (e *Element) Attribute(ctx context.Context, name string) (string, error) {
 //
 // 注意语义：它统计的是「选择器命中多少个」，不要求元素唯一。
 // 因此 Count 为 0 是正常返回值（不是错误），用 err 判断即可。
+//
+// 四种定位方式一律走一次 JS 求值（与 FrameElement.Count 对齐）：既省掉把节点树
+// 拉回来的开销，也保证「未命中」在每种方式下都是 0。早期只有 CSS 分支走 JS，
+// XPath / ID 走 chromedp.Nodes——而 chromedp 的节点查询在命中前会一直重试到
+// ctx 到期，于是未命中变成「白等一个完整超时再报错」，与上面这段文档自相矛盾
+// （历史缺陷 BUG-04）。
 func (e *Element) Count(ctx context.Context) (int, error) {
 	if err := e.sel.validate(); err != nil {
 		return 0, err
 	}
-	// CSS 直接用 querySelectorAll 求值，不必把节点树拉回来，快得多
-	if e.sel.mode == modeCSS {
-		var count int
-		js := fmt.Sprintf("document.querySelectorAll(%q).length", e.sel.expr)
-		if err := e.tab.run(ctx, chromedp.Evaluate(js, &count)); err != nil {
-			return 0, err
-		}
-		return count, nil
+
+	var js string
+	switch e.sel.mode {
+	case modeXPath:
+		// count() 返回数字，必须请求 NUMBER_TYPE(1)；用 FIRST_ORDERED_NODE_TYPE(9)
+		// 会报 "The result is not a node set"。XPath 里带双引号的属性值是常态
+		// （//div[@data-x="a"]），因此整段表达式必须用 %q 拼进 JS 字符串，
+		// 手写引号会把 JS 字符串提前截断。
+		js = fmt.Sprintf(`document.evaluate(%q, document, null, 1, null).numberValue`,
+			"count("+e.sel.expr+")")
+	case modeID, modeJSPath:
+		// ID / JS path 语义上就是「单个元素」：命中返回 1，未命中返回 0
+		js = fmt.Sprintf(`(function(){ const el = %s; return el ? 1 : 0; })()`, e.sel.jsExpr())
+	default:
+		js = fmt.Sprintf(`document.querySelectorAll(%q).length`, e.sel.expr)
 	}
-	nodes, err := e.tab.nodes(ctx, e.sel)
-	if err != nil {
+
+	var count int
+	if err := e.tab.run(ctx, chromedp.Evaluate(js, &count)); err != nil {
 		return 0, err
 	}
-	return len(nodes), nil
+	return count, nil
 }
 
 // Eval 在该元素上执行 JS 并返回结果，函数体内 this 即该元素。

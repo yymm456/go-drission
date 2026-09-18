@@ -123,8 +123,19 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 	}
 
 	// attach 一个 chromedp 上下文到首个 target，作为该上下文的根标签页
-	firstCtx, firstCancel := chromedp.NewContext(b.rootCtx, chromedp.WithTargetID(firstID))
-	if err := chromedp.Run(firstCtx); err != nil {
+	// rootCtx 在锁内取快照（并发 Close 会置 nil，chromedp.NewContext(nil) 会 panic）
+	rootCtx, err := b.connectedRootCtx()
+	if err != nil {
+		b.disposeBrowserContext(bcID)
+		return nil, err
+	}
+	firstCtx, firstCancel := chromedp.NewContext(rootCtx, chromedp.WithTargetID(firstID))
+	// 超时只加在等待预算上，避免 Chrome 无响应时永久阻塞（见 tabInitBudget）
+	budget, cancelBudget := tabInitBudget(ctx)
+	defer cancelBudget()
+	if err := runAbandonable(budget, firstCtx, func(runCtx context.Context) error {
+		return chromedp.Run(runCtx)
+	}); err != nil {
 		firstCancel()
 		b.disposeBrowserContext(bcID)
 		return nil, fmt.Errorf("attach 隔离上下文 %q 首个标签页失败: %w", name, err)
@@ -208,8 +219,17 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 		return nil, fmt.Errorf("隔离上下文内新建标签页失败: %w", err)
 	}
 
-	tabCtx, cancel := chromedp.NewContext(bc.browser.rootCtx, chromedp.WithTargetID(tid))
-	if err := chromedp.Run(tabCtx); err != nil {
+	rootCtx, err := bc.browser.connectedRootCtx()
+	if err != nil {
+		return nil, err
+	}
+	tabCtx, cancel := chromedp.NewContext(rootCtx, chromedp.WithTargetID(tid))
+	// 超时只加在等待预算上，避免 Chrome 无响应时永久阻塞（见 tabInitBudget）
+	budget, cancelBudget := tabInitBudget(ctx)
+	defer cancelBudget()
+	if err := runAbandonable(budget, tabCtx, func(runCtx context.Context) error {
+		return chromedp.Run(runCtx)
+	}); err != nil {
 		cancel()
 		return nil, err
 	}

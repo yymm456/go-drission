@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -72,15 +73,45 @@ func NewJar() *Jar {
 	return &Jar{entries: map[string]map[string]*entry{}}
 }
 
-// canonicalHost 规范化主机名：去掉端口与前导点，统一小写，并剥掉 IPv6 的方括号。
+// canonicalHost 规范化主机名：去掉端口与方括号，统一小写，并剥掉前导点。
+//
+// 端口必须交给标准库去剥：手写「含冒号就按端口截断」对 IPv6 是错的——
+// 裸 "::1" 的冒号在位置 0，会被截成空串（Cookie 静默丢失），
+// "[::1]:8080" 不以 "[" 结尾，方括号只剥掉前半个，残留 "::1]:8080"。
+// net.SplitHostPort 只在「确实带端口」时才成功，上面两种形态都会返回 error 而原样保留。
 func canonicalHost(host string) string {
 	h := strings.TrimSpace(host)
-	if i := strings.Index(h, ":"); i >= 0 && !strings.HasPrefix(h, "[") {
-		h = h[:i]
+	if hostOnly, _, err := net.SplitHostPort(h); err == nil {
+		h = hostOnly
 	}
-	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	h = strings.Trim(h, "[]")
 	h = strings.TrimPrefix(h, ".")
 	return strings.ToLower(h)
+}
+
+// validCookieDomain 判断一条 Cookie 的 Domain 是否可以接受。
+//
+// host 是「写入来源主机」（响应路径下即请求 URL 的 host）。两道检查都源自
+// RFC 6265 §5.3 的第 5/6 步：
+//
+//  1. 归属：域级 Cookie 的 Domain 必须是来源主机本身或其上级域，否则就是
+//     「无关站点给别人的域投毒」；
+//  2. 公共后缀：com / co.uk / github.io 这类纯后缀一律拒收，否则任意一个
+//     .com 站点都能给所有 .com 域写 Cookie（跨站 Cookie 投毒）。
+//
+// 文件导入路径（Jar.Load）没有来源主机，传空串 host 即跳过第 1 道——
+// 但第 2 道与来源无关，任何写入路径都不能放过。
+//
+// 抽成一个函数是为了让 Jar.SetCookies 与 Jar.Load 共用同一套规则：
+// 这两条写入路径各自内联一份时，规则很容易只在其中一条上生效（历史缺陷 BUG-01）。
+func validCookieDomain(host, domain string) bool {
+	if domain == "" {
+		return false
+	}
+	if host != "" && domain != host && !strings.HasSuffix(host, "."+domain) {
+		return false
+	}
+	return !isPublicSuffix(domain)
 }
 
 // SetCookies 实现 http.CookieJar：把响应带回的 Cookie 存入容器。
@@ -119,15 +150,9 @@ func (j *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		if c.Domain != "" {
 			domain = canonicalHost(c.Domain)
 			hostOnly = false
-			// 浏览器不会接受「与当前域名无关」的 Domain，这里同样拒绝，
-			// 防止恶意站点给整个后缀域下毒。
-			if domain != host && !strings.HasSuffix(host, "."+domain) {
-				continue
-			}
-			// 还要挡住公共后缀：Domain=com 时 example.com 的确以 ".com" 结尾，
-			// 但浏览器依据公共后缀表（publicsuffix）会直接拒收。
-			// 少这道检查，任意一个 .com 站点都能给所有 .com 域塞 Cookie。
-			if isPublicSuffix(domain) {
+			// 归属检查（须是来源域名本身或其上级域）与公共后缀检查都收敛在
+			// validCookieDomain 内，Load 走同一个函数，避免两条写入路径的规则漂移。
+			if !validCookieDomain(host, domain) {
 				continue
 			}
 		}
@@ -380,7 +405,16 @@ func (j *Jar) Load(items []CookieItem) int {
 		}
 		hostOnly := !strings.HasPrefix(strings.TrimSpace(it.Domain), ".")
 		domain := canonicalHost(it.Domain)
-		if domain == "" {
+		// 文件导入没有「来源主机」，传空 host 即跳过归属检查；公共后缀检查与来源
+		// 无关，任何路径都不放过——否则一份来路不明的 cookies.json 里放一条
+		// Domain=".com"，之后所有 .com 域请求都会带上它。
+		if !validCookieDomain("", domain) {
+			continue
+		}
+		// CHIPS 分区 Cookie 必须带 Secure（README「分区 Cookie」一节声明的组合为
+		// Secure + SameSite=None + Partitioned）。缺 Secure 的条目浏览器会拒收，
+		// 这里拦下，免得出现「导入报成功、登录态其实不完整」。
+		if it.Partitioned && !it.Secure {
 			continue
 		}
 		path := it.Path

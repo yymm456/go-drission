@@ -2,64 +2,78 @@ package chromium
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
-// targetInfo 是 Chrome /json 端点返回的 target 结构
+// targetInfo 是「一个归 Browser 托管的 page target」的概要。
 type targetInfo struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	URL  string `json:"url"`
+	ID   string
+	Type string
+	URL  string
 }
 
-// listTargets 通过 HTTP /json 端点获取 target 列表
-// 不依赖 chromedp context，因此不会触发 invalid context；请求生命周期由 ctx 控制。
+// listTargets 通过 CDP Target.getTargets 获取「默认浏览器上下文」里的 page target 列表。
 //
-// 与 launch.go 的端口探测共用 noProxyTransport：/json 与调试端口都在本机回环上，
-// 必须直连。虽然 Go 的 ProxyFromEnvironment 对 loopback 地址本来就会跳过代理，
-// 但显式复用同一个 client 还能拿到统一的拨号/响应头超时，
-// 也避免依赖 http.DefaultClient 这个全局变量被调用方改写。
+// 为什么不用 HTTP /json 端点：那个端点**不返回 browserContextId**，隔离上下文
+// （CDP BrowserContext）里的页面与默认上下文的页面在它眼里长得一模一样，无从区分。
+// 库早期因此把隔离上下文里的标签页也附着成 Browser 级 *Tab：同一个 target 被
+// Browser 与 BrowserContext 两套管理器各持一份，GetTab / LatestTab 会返回隔离上下文里的
+// 页面，一侧关掉后另一侧还留着陈旧条目（历史缺陷 BUG-06）。
+//
+// 这里改走 CDP（TargetInfo 带 browserContextId），只收默认上下文的 page target。
+//
+// 注意默认上下文的判据**不能**写成「BrowserContextID == ""」：实测 Chrome 会给默认
+// 上下文也分配一个 GUID（扩展页面、浏览器内部页面与普通页面共用它），按空串过滤会把
+// 所有页面一起滤掉，连锚点 target 都不剩。判据改为「等于锚点 target 所在的上下文」，
+// 即 b.defaultBrowserContextID（Connect 时从 rootCtx 的锚点 target 上取一次）。
+// 这样新旧两种行为都成立：老版本默认上下文 ID 是空串，判据同样成立。
+//
+// 调用跑在常驻 rootCtx 的 browser 连接上，用 boundedRootCtx 约束：
+// 既拿到 browser 级路由，又受调用方 ctx 的取消/超时与 30s 兜底保护。
 func (b *Browser) listTargets(ctx context.Context) ([]targetInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("http://127.0.0.1:%d/json", b.port), nil)
-	if err != nil {
-		return nil, fmt.Errorf("构造 target 查询请求失败: %w", err)
-	}
+	runCtx, cancelRun := b.boundedRootCtx(ctx)
+	defer cancelRun()
 
-	resp, err := noProxyClient.Do(req)
+	var infos []*target.Info
+	err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
+		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		var e error
+		infos, e = target.GetTargets().Do(bexec)
+		return e
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("查询 target 列表失败: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("查询 target 列表失败: 端口 %d 返回 HTTP %d", b.port, resp.StatusCode)
-	}
 
-	var infos []targetInfo
-	if err := json.NewDecoder(resp.Body).Decode(&infos); err != nil {
-		return nil, fmt.Errorf("解析 target 列表失败: %w", err)
+	out := make([]targetInfo, 0, len(infos))
+	for _, info := range infos {
+		// 只收默认上下文的 page：隔离上下文的页面归 BrowserContext 管。
+		// 判据是与锚点 target 所在上下文比对，不是「为空」——理由见上面的注释。
+		if info.Type != "page" || info.BrowserContextID != b.defaultBrowserContextID {
+			continue
+		}
+		out = append(out, targetInfo{ID: string(info.TargetID), Type: info.Type, URL: info.URL})
 	}
-	return infos, nil
+	return out, nil
 }
 
 // syncTabs 把「浏览器里真实存在的 target 列表」同步到托管的标签页集合，
 // 并返回按 target 顺序排列的标签页。
 //
-// infos 必须由调用方在锁外取好（见 guard + listTargets）：查询本机 /json 虽然快，
+// infos 必须由调用方在锁外取好（见 guard + listTargets）：查询 target 列表虽然快，
 // 但端口卡顿时会一直等，持锁做这件事会把所有标签页操作一起卡住。
 //
-// 不接受 ctx：内部唯一的 I/O 是附着外部 target，而 chromedp 的 target 附着
-// 由 Browser 自己的生命周期上下文（rootCtx）决定归属；接一个调用方 ctx 进来只会
-// 让人误以为「取消它能中断附着」，实际并不能。
+// ctx 会一路传到 attachTarget：附着外部 target 是一次 CDP 往返，必须受调用方的
+// 取消 / 超时约束（配合 tabInitBudget 的 30s 兜底），否则 Chrome 假死时
+// Tabs() 会永久挂起。
 //
 // 内部按「锁内读状态 → 锁外做 I/O → 锁内写状态」三段式组织，
 // 附着外部标签页（一次 chromedp 往返）全部发生在锁外。
-func (b *Browser) syncTabs(infos []targetInfo) ([]*Tab, error) {
+func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, error) {
 	alive := make(map[target.ID]string, len(infos))
 	for _, info := range infos {
 		if info.Type == "page" {
@@ -106,7 +120,7 @@ func (b *Browser) syncTabs(infos []targetInfo) ([]*Tab, error) {
 	// 第二段：锁外附着新增的外部标签页。
 	attached := make([]*Tab, 0, len(pending))
 	for _, id := range pending {
-		tab, err := b.attachTarget(id, alive[id])
+		tab, err := b.attachTarget(ctx, id, alive[id])
 		if err != nil {
 			// 该 target 无法附加（可能正在关闭），跳过而不是让整次同步失败
 			b.opts.logger.Warn("附加外部标签页失败", "id", id, "err", err)
@@ -164,9 +178,22 @@ func (b *Browser) syncTabs(infos []targetInfo) ([]*Tab, error) {
 // 必须从常驻 rootCtx 派生子上下文：只有共享同一个 browser 连接的子上下文才能正常
 // 操作 target，从 allocCtx 派生会另起一条连接。派生后还要 Run 一次完成 attach，
 // 否则后续命令会报 "no browser is open"。
-func (b *Browser) attachTarget(id target.ID, url string) (*Tab, error) {
-	tabCtx, cancel := chromedp.NewContext(b.rootCtx, chromedp.WithTargetID(id))
-	if err := chromedp.Run(tabCtx); err != nil {
+//
+// attach 这一步必须带超时：tabCtx 继承自无 deadline 的 rootCtx，直接 Run(tabCtx)
+// 会让这里的 Tabs() 在 Chrome 假死时永久挂起，调用方的 ctx 形同虚设（历史缺陷 BUG-07）。
+// 注意超时只能加在「等待预算」上，见 tabInitBudget 的说明。
+func (b *Browser) attachTarget(ctx context.Context, id target.ID, url string) (*Tab, error) {
+	// 在锁内取 rootCtx 快照：并发 Close 会把它置 nil，而 chromedp.NewContext(nil) 会 panic
+	rootCtx, err := b.connectedRootCtx()
+	if err != nil {
+		return nil, err
+	}
+	tabCtx, cancel := chromedp.NewContext(rootCtx, chromedp.WithTargetID(id))
+	budget, cancelBudget := tabInitBudget(ctx)
+	defer cancelBudget()
+	if err := runAbandonable(budget, tabCtx, func(runCtx context.Context) error {
+		return chromedp.Run(runCtx)
+	}); err != nil {
 		cancel()
 		return nil, err
 	}

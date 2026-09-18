@@ -29,8 +29,9 @@ type Session struct {
 	jar     *Jar
 	headers http.Header
 
-	// maxBodySize 是单次响应体的字节上限，<= 0 表示不限。
-	// 响应体要整体读进内存（Text/JSON 可反复读取的前提），所以需要一道闸。
+	// maxBodySize 是单次响应体的字节上限（默认 32MB，见 defaultMaxBodySize），
+	// <= 0 表示不限。响应体要整体读进内存（Text/JSON 可反复读取的前提），
+	// 所以需要一道闸。
 	maxBodySize int64
 
 	mu sync.RWMutex
@@ -84,8 +85,8 @@ func WithJar(j *Jar) Option {
 // WithMaxBodySize 限制单次响应体的字节上限，超限返回 ErrBodyTooLarge。
 //
 // Response 会把响应体整体读进内存，没有上限时一个误配成 Content-Length: 8G
-// 的接口足以把进程撑爆。传 <= 0（默认）表示不限。
-// 需要下载大文件请传 0 并改用 Client() 自己流式处理。
+// 的接口足以把进程撑爆，因此默认即设 32MB（见 defaultMaxBodySize）。
+// 传 <= 0 表示不限；需要下载大文件请关掉上限并改用 Client() 自己流式处理。
 func WithMaxBodySize(n int64) Option {
 	return func(s *Session) {
 		s.maxBodySize = n
@@ -129,7 +130,13 @@ func WithNoRedirect() Option {
 
 const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-// New 创建一个会话。默认自带 Cookie 容器、30s 超时与 Chrome UA。
+// defaultMaxBodySize 是新会话默认的响应体上限（32MB）。
+//
+// README 与 CODE_REVIEW 都声明「默认 32MB」，早期实现却漏了赋值：maxBodySize 落到零值 0，
+// 而 newResponse 只在 maxBody > 0 时才限流——文档承诺的 OOM 保护实际并不存在。
+const defaultMaxBodySize = 32 << 20
+
+// New 创建一个会话。默认自带 Cookie 容器、30s 超时、32MB 响应体上限与 Chrome UA。
 func New(opts ...Option) *Session {
 	jar := NewJar()
 	s := &Session{
@@ -137,8 +144,9 @@ func New(opts ...Option) *Session {
 			Jar:     jar,
 			Timeout: 30 * time.Second,
 		},
-		jar:     jar,
-		headers: http.Header{},
+		jar:         jar,
+		headers:     http.Header{},
+		maxBodySize: defaultMaxBodySize,
 	}
 	s.SetHeader("User-Agent", defaultUserAgent)
 	s.SetHeader("Accept", "*/*")

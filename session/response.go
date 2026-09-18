@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,8 +25,11 @@ type Response struct {
 
 // newResponse 读取并缓存响应体，同时关闭底层 Body（避免连接泄漏）。
 //
-// maxBody 是响应体上限（字节），<= 0 表示不限。判超限的方式是「多读一个字节」：
-// 读到 maxBody+1 说明必然超限，此时立刻返回错误，不把剩余内容拉进内存。
+// maxBody 是响应体上限（字节），<= 0 表示不限。判超限的方式是「读满上限后再探一个字节」：
+// 先按上限读，只有正好读满时才额外读 1 字节，读得到就说明被截断了。
+//
+// 刻意不写成 io.LimitReader(body, maxBody+1)：maxBody 为 math.MaxInt64 时 +1 会回绕成
+// 负数，LimitReader 遇负数立即返回 EOF，整个正文被吞掉且不报任何错（历史缺陷 BUG-08）。
 func newResponse(resp *http.Response, maxBody int64) (*Response, error) {
 	if resp == nil {
 		return nil, ErrNilResponse
@@ -33,18 +37,29 @@ func newResponse(resp *http.Response, maxBody int64) (*Response, error) {
 	defer resp.Body.Close()
 
 	var (
-		body []byte
-		err  error
+		body     []byte
+		err      error
+		tooLarge bool
 	)
 	if maxBody > 0 {
-		body, err = io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+		body, err = io.ReadAll(io.LimitReader(resp.Body, maxBody))
+		if err == nil && int64(len(body)) == maxBody {
+			var probe [1]byte
+			n, perr := resp.Body.Read(probe[:])
+			switch {
+			case n > 0:
+				tooLarge = true
+			case perr != nil && !errors.Is(perr, io.EOF):
+				err = perr
+			}
+		}
 	} else {
 		body, err = io.ReadAll(resp.Body)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("读取响应体失败: %w", err)
 	}
-	if maxBody > 0 && int64(len(body)) > maxBody {
+	if tooLarge {
 		return nil, fmt.Errorf("%w（超过 %d 字节，Content-Type %s）",
 			ErrBodyTooLarge, maxBody, contentTypeOf(resp))
 	}
