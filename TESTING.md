@@ -12,7 +12,7 @@ go-drission 的测试分层、跑法与当前稳定基线。
 | 层 | 位置 | 依赖浏览器 | 命令 | 用例数 |
 |---|---|---|---|---|
 | 单元测试 | `chromium/`、`session/` 下的 `*_test.go` | 否 | `go test ./...` | 95 |
-| 冒烟测试 | `smoke/`（`//go:build smoke`） | **是** | `go test -tags smoke ./smoke/...` | 59 |
+| 冒烟测试 | `smoke/`（`//go:build smoke`） | **是** | `go test -tags smoke ./smoke/...` | 60 |
 
 冒烟用 build tag 隔离的原因：它要真起 Chrome（冷启动 1~2 秒），不该拖慢日常 `go test`。
 **本机找不到浏览器时，smoke 用例自动 skip，不误报失败。**
@@ -112,7 +112,7 @@ GO_DRISSION_STABILITY_ROUNDS=100 go test -tags smoke -run TestStability -timeout
 | Chromium | Chrome 153.0.8010.48（`C:\Program Files\Google\Chrome\Application`） |
 | golangci-lint | v2.13.2（必须用绝对路径，见下） |
 | 单元测试 | 95 个，全通过 |
-| 冒烟测试 | 59 个，全通过（约 100 秒，含新增的稳定性/异常/档案用例） |
+| 冒烟测试 | 60 个，全通过（约 110 秒，含新增的稳定性/异常/档案用例） |
 | `go test -race` | 全通过，无 data race 报告 |
 
 最后一次全量：
@@ -126,7 +126,7 @@ ok  chromium/network        1.440s
 ok  chromium/page           1.452s
 ok  chromium/profile        1.099s
 ok  session                 3.198s
-ok  smoke                  103.372s   （-race -tags smoke）
+ok  smoke                  110.599s   （-race -tags smoke）
 ```
 
 ---
