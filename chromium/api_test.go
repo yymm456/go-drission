@@ -445,3 +445,71 @@ func TestBrowserFieldsAreFrozen(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// S7：Profile / ProfileManager 别名化后的冻结
+//
+// 与 S5/S6 同一个病因：`type Profile = profile.Profile` 之后，这两个类型的字段与
+// 全部方法从 `go doc -all ./chromium` 里消失，公开 API 闸门看不见它们。
+//
+// 方法表达式 var 块把 6 个导出方法的签名冻在**编译期**：签名一改，本包就编译不过。
+// 这比反射严格 —— 反射查得到方法存在，查不出签名。
+//
+// 签名逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
+
+// Profile 的 1 个导出方法签名。
+var (
+	_ func(*Profile) *Browser = (*Profile).Browser
+)
+
+// ProfileManager 的 5 个导出方法签名。
+var (
+	_ func(*ProfileManager, string)                                          = (*ProfileManager).Close
+	_ func(*ProfileManager)                                                  = (*ProfileManager).CloseAll
+	_ func(*ProfileManager, string) (*Profile, error)                        = (*ProfileManager).Get
+	_ func(*ProfileManager) []string                                         = (*ProfileManager).Names
+	_ func(*ProfileManager, context.Context, string) (*Browser, *Tab, error) = (*ProfileManager).Open
+)
+
+// TestProfileFieldsAreFrozen 钉住 Profile / ProfileManager 的**导出字段**。
+//
+// Profile 恰好有 3 个导出字段（Name / Dir / Port），它们是调用方要读的只读元信息，
+// 类型也必须比到具体类型而不是 Kind；ProfileManager **必须 0 个** ——
+// 它的 baseDir / basePort / opts / 端口池 / per-name 锁全是内部状态，
+// 任何一个变成导出字段就等于把「档案目录怎么算、端口怎么分」写进对外契约。
+//
+// 反射的 NumField() 会把私有字段一起数进去，所以只数 IsExported() 的（同 §16.11）。
+func TestProfileFieldsAreFrozen(t *testing.T) {
+	rt := reflect.TypeFor[Profile]()
+	exported := 0
+	for f := range rt.Fields() {
+		if f.IsExported() {
+			exported++
+		}
+	}
+	if exported != 3 {
+		t.Fatalf("Profile 的**导出**字段数变了：期望 3（Name / Dir / Port），实际 %d", exported)
+	}
+	want := map[string]reflect.Type{
+		"Name": reflect.TypeFor[string](),
+		"Dir":  reflect.TypeFor[string](),
+		"Port": reflect.TypeFor[int](),
+	}
+	for name, exp := range want {
+		f, ok := rt.FieldByName(name)
+		if !ok {
+			t.Errorf("Profile 缺少导出字段 %s", name)
+			continue
+		}
+		if f.Type != exp {
+			t.Errorf("Profile.%s 的类型 = %s，期望 %s", name, f.Type, exp)
+		}
+	}
+
+	for f := range reflect.TypeFor[ProfileManager]().Fields() {
+		if f.IsExported() {
+			t.Errorf("ProfileManager 多了一个导出字段 %s（%s）：档案内部状态不该进入公开契约",
+				f.Name, f.Type)
+		}
+	}
+}

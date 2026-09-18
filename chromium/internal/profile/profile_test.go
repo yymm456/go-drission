@@ -1,4 +1,4 @@
-package chromium
+package profile
 
 import (
 	"path/filepath"

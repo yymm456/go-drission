@@ -23,6 +23,7 @@ import (
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 	"github.com/yymm456/go-drission/chromium/internal/network"
 	"github.com/yymm456/go-drission/chromium/internal/page"
+	"github.com/yymm456/go-drission/chromium/internal/profile"
 )
 
 // Option 是函数式配置项
@@ -319,3 +320,37 @@ func OpenPage(ctx context.Context, port int, opts ...Option) (*Browser, *Tab, er
 //
 //	chromium.WithContextProxy("http://127.0.0.1:7891")
 func WithContextProxy(proxy string) ContextOption { return browser.WithContextProxy(proxy) }
+
+// 以下是 S7 下沉到 internal/profile 后需要门面转发的公开 API。
+//
+// 与 S5/S6 同一个语言事实：Go 不允许给非本包定义的类型添加方法，
+// 所以 Profile / ProfileManager 的**全部方法**必须一次性搬进 internal/profile。
+//
+// 别名化之后，这两个类型的字段与全部方法都会从 go doc 输出里消失，
+// 公开 API 闸门看不见它们，因此由 api_test.go 做编译期冻结（方法表达式 var 块）+ 反射冻结字段。
+//
+// 依赖方向：internal/profile -> internal/browser（档案「拥有」浏览器，不是反过来），
+// 与 §6.1 的目标依赖图一致。
+
+// Profile 代表一个命名的浏览器档案：独立的用户数据目录 + 独立端口，
+// 因此各 Profile 之间的 Cookie / 登录态 / 代理 / UA 完全隔离，且登录态持久化到磁盘。
+//
+// 定义见 internal/profile。Name / Dir / Port 是只读元信息，
+// 已打开的浏览器用 Browser() 取（可能为 nil，表示尚未 Open）。
+type Profile = profile.Profile
+
+// ProfileManager 管理多个命名 Profile，实现多账户隔离。
+//
+// 定义见 internal/profile。同名 Profile 复用同一个 Browser，首次打开时才真正
+// 连接/启动 Chrome（懒加载）；并发模型是「同名串行、异名并行」。
+type ProfileManager = profile.ProfileManager
+
+// NewProfileManager 创建一个 Profile 管理器。
+//   - baseDir：所有 Profile 用户数据目录的根目录，每个 Profile 落在 baseDir/<name>。
+//   - basePort：起始调试端口，按打开顺序递增分配（basePort、basePort+1 ...）。
+//     传 0 则使用默认起始端口 9300。
+//   - opts：应用于每个 Profile 的公共配置项（如 WithHeadless / WithProxy / WithLogger）。
+//     注意：不要在此传 WithUserDataDir，它会被 Profile 各自的目录覆盖。
+func NewProfileManager(baseDir string, basePort int, opts ...Option) *ProfileManager {
+	return profile.NewProfileManager(baseDir, basePort, opts...)
+}

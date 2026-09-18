@@ -1,4 +1,4 @@
-package chromium
+package profile
 
 import (
 	"context"
@@ -8,7 +8,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/yymm456/go-drission/chromium/internal/browser"
+	"github.com/yymm456/go-drission/chromium/internal/config"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/internal/page"
 )
 
 // Profile 代表一个命名的浏览器档案：独立的用户数据目录 + 独立端口，
@@ -18,11 +21,11 @@ type Profile struct {
 	Name    string // 档案名（调用方传入的原始名字）
 	Dir     string // 该档案的用户数据目录
 	Port    int    // 该档案使用的调试端口
-	browser *Browser
+	browser *browser.Browser
 }
 
 // Browser 返回该档案已打开的 Browser（可能为 nil，表示尚未 Open）。
-func (p *Profile) Browser() *Browser { return p.browser }
+func (p *Profile) Browser() *browser.Browser { return p.browser }
 
 // ProfileManager 管理多个命名 Profile，实现多账户隔离。
 //
@@ -47,7 +50,7 @@ func (p *Profile) Browser() *Browser { return p.browser }
 type ProfileManager struct {
 	baseDir  string
 	basePort int
-	opts     []Option
+	opts     []config.Option
 
 	mu       sync.Mutex
 	profiles map[string]*Profile
@@ -71,7 +74,7 @@ type ProfileManager struct {
 //     传 0 则使用默认起始端口 9300。
 //   - opts：应用于每个 Profile 的公共配置项（如 WithHeadless / WithProxy / WithLogger）。
 //     注意：不要在此传 WithUserDataDir，它会被 Profile 各自的目录覆盖。
-func NewProfileManager(baseDir string, basePort int, opts ...Option) *ProfileManager {
+func NewProfileManager(baseDir string, basePort int, opts ...config.Option) *ProfileManager {
 	if basePort <= 0 {
 		basePort = 9300
 	}
@@ -126,7 +129,7 @@ func (pm *ProfileManager) releasePort(port int) {
 // Open 打开（或复用）指定名字的 Profile，返回其 Browser 与一个可用 Tab。
 // 同名 Profile 已打开时直接复用；否则以 baseDir/<name> 为用户数据目录、
 // 分配一个独立端口，连接已有 Chrome 或启动新的。
-func (pm *ProfileManager) Open(ctx context.Context, name string) (*Browser, *Tab, error) {
+func (pm *ProfileManager) Open(ctx context.Context, name string) (*browser.Browser, *page.Tab, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, nil, fmt.Errorf("ProfileManager: profile 名字不能为空")
 	}
@@ -170,11 +173,11 @@ func (pm *ProfileManager) Open(ctx context.Context, name string) (*Browser, *Tab
 	pm.mu.Unlock()
 
 	// 复制公共配置，再强制覆盖为该 Profile 独立的用户数据目录
-	opts := make([]Option, 0, len(pm.opts)+1)
+	opts := make([]config.Option, 0, len(pm.opts)+1)
 	opts = append(opts, pm.opts...)
-	opts = append(opts, WithUserDataDir(dir))
+	opts = append(opts, config.WithUserDataDir(dir))
 
-	browser, tab, err := OpenPage(ctx, port, opts...)
+	browser, tab, err := browser.OpenPage(ctx, port, opts...)
 	if err != nil {
 		pm.releasePort(port)
 		return nil, nil, fmt.Errorf("打开 Profile %q 失败: %w", name, err)
@@ -188,7 +191,7 @@ func (pm *ProfileManager) Open(ctx context.Context, name string) (*Browser, *Tab
 
 // reuseTab 复用已打开的浏览器：优先取最新标签页，没有就新建。
 // 不持全局锁——LatestTab / NewTab 内部会走 CDP 调用。
-func (pm *ProfileManager) reuseTab(ctx context.Context, browser *Browser) (*Browser, *Tab, error) {
+func (pm *ProfileManager) reuseTab(ctx context.Context, browser *browser.Browser) (*browser.Browser, *page.Tab, error) {
 	tab, err := browser.LatestTab(ctx)
 	if err != nil {
 		tab, err = browser.NewTab(ctx)
