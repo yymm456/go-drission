@@ -74,7 +74,6 @@ func (t *Tab) URL() string {
 	return t.url
 }
 
-// setURL 记录地址快照，仅供包内同步 target 列表时使用。
 func (t *Tab) setURL(u string) {
 	t.mu.Lock()
 	t.url = u
@@ -309,7 +308,6 @@ func (t *Tab) WindowID(ctx context.Context) (int64, error) {
 
 // ---------- 节点级操作（ClickJS / SetValue 的公共基础）----------
 
-// nodes 按选择器取回全部匹配节点。
 func (t *Tab) nodes(ctx context.Context, sel Selector) ([]*cdp.Node, error) {
 	if err := sel.validate(); err != nil {
 		return nil, err
@@ -352,8 +350,6 @@ func notFoundError(sel Selector, err error) error {
 func (t *Tab) firstNode(ctx context.Context, sel Selector) (*cdp.Node, error) {
 	nodes, err := t.nodes(ctx, sel)
 	if err != nil {
-		// 与 wrapNotFound 共用 notFoundError：包成 ErrElementNotFound，调用方可用 errors.Is 判断，
-		// 也能从文案看出是哪个选择器没命中；主动取消原样透传。
 		return nil, notFoundError(sel, err)
 	}
 	if len(nodes) == 0 {

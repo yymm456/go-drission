@@ -56,7 +56,6 @@ func (f *Frame) Name() string { return f.name }
 
 // ---------- 框架树 ----------
 
-// frameInfo 是打平后的框架信息。
 type frameInfo struct {
 	ID       cdp.FrameID
 	URL      string
@@ -64,7 +63,6 @@ type frameInfo struct {
 	ParentID cdp.FrameID
 }
 
-// flattenFrames 把嵌套的框架树摊平成一维列表。
 func flattenFrames(tree *cdppage.FrameTree, out *[]frameInfo) {
 	if tree == nil || tree.Frame == nil {
 		return
@@ -107,7 +105,7 @@ func (t *Tab) Frames(ctx context.Context) ([]*Frame, error) {
 	return out, nil
 }
 
-// frameInfos 拉取并摊平框架树，同时剔除主框架（树根）。
+// frameInfos 拉取并摊平框架树。
 func (t *Tab) frameInfos(ctx context.Context) ([]frameInfo, error) {
 	var tree *cdppage.FrameTree
 	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
@@ -131,7 +129,6 @@ func (t *Tab) frameInfos(ctx context.Context) ([]frameInfo, error) {
 	return all[1:], nil
 }
 
-// bindFrame 为指定框架创建 isolated world 并返回可操作的 Frame。
 // loc 记录这次定位的依据，供页面导航后重新定位使用。
 func (t *Tab) bindFrame(ctx context.Context, info frameInfo, loc frameLocator) (*Frame, error) {
 	worldID, err := t.createIsolatedWorld(ctx, info.ID)
@@ -256,7 +253,7 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 				return err
 			}
 			if exception != nil {
-				// 用哨兵包一层：调用方可用 errors.Is 判断是脚本报错而非环境问题，上层重试逻辑据此拒绝重试。
+				// 包成 ErrFrameScript，供上层据此拒绝重试（理由见 eval 注释）。
 				return fmt.Errorf("%w: %s", errs.ErrFrameScript, cdpkit.ExceptionText(exception))
 			}
 			res = cdpkit.DecodeRemoteValue(v)

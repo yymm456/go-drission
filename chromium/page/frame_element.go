@@ -23,7 +23,6 @@ import (
 //     不经 CDP DOM 域，故跨域 iframe 也能操作。
 //   - Click 不做可见性检查：元素被遮挡、隐藏、零尺寸都照点，也不产生 mousedown/mouseup 序列。
 //     要真实鼠标事件改用 Tab 上的 Element（走 input 域），但它进不了跨域 iframe。
-//   - SetValue 直接赋值并手动派发 input/change，不产生键盘事件；只监听 keystroke 的组件不会触发。
 //   - 不缓存任何节点引用：每次操作都用选择器在框架内重新求值（本通道不经 CDP DOM 域，不存在 nodeID）。
 //
 // # 错误语义（均可用 errors.Is 判断）
@@ -99,10 +98,7 @@ func (fe *FrameElement) String() string {
 
 // ---------- 操作 ----------
 
-// runOp 执行一次「定位元素 → 执行 body → 校验返回值」的框架内操作。
-//
-// Click / SetValue 函数体不同，外壳一致：按选择器取 el，取不到返回 'not found'，取到再跑 body，
-// 最后交 frameOpResult 翻译成 Go 错误。外壳收在这里，两侧只关心自己的 body，也不会漏判 el 为空。
+// runOp 是 Click / SetValue 共用的外壳：el 定位与判空、返回值翻译集中在此，两侧只提供 body。
 //
 // body 是拿到非空 el 后要跑的语句，须自带 return（成功返回 'ok'）。
 func (fe *FrameElement) runOp(ctx context.Context, action, body string) error {
@@ -148,8 +144,7 @@ func (fe *FrameElement) Text(ctx context.Context) (string, error) {
 
 // Count 返回框架内匹配该选择器的元素数量。
 //
-// 四种定位方式都支持：CSS 走 querySelectorAll，XPath 走 evaluate("count(...)")，ID / JS path 是
-// 「单个元素」语义（命中 1、未命中 0）。Count 为 0 是正常返回值（非错误），用 err 判断即可。
+// 四种定位方式都支持（模式到 JS 的映射见 selectorCountJS）。Count 为 0 是正常返回值（非错误），用 err 判断即可。
 func (fe *FrameElement) Count(ctx context.Context) (int, error) {
 	if err := fe.sel.validate(); err != nil {
 		return 0, err

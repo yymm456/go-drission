@@ -193,7 +193,7 @@ func (e *Element) Count(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	// 选择器 → 计数 JS 的映射收敛在 selectorCountJS，与 FrameElement.Count 共用一份，避免两条路径的 mode 分支漂移（BUG-04）。
+	// 与 FrameElement.Count 共用 selectorCountJS（BUG-04）。
 	js := selectorCountJS(e.sel)
 
 	var count int
