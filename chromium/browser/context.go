@@ -26,20 +26,18 @@ func WithContextProxy(proxy string) ContextOption {
 	}
 }
 
-// BrowserContext 是同一个 Chrome 实例内的一个隔离上下文（类似无痕窗口，但可并存多个）。
-// 它拥有独立的 Cookie / 缓存 / 存储，并可选独立代理；同一上下文内可开多个标签页共享登录态。
+// BrowserContext 是同一 Chrome 实例内的一个隔离上下文（类似无痕窗口，但可并存多个）。
+// 拥有独立的 Cookie / 缓存 / 存储，可选独立代理；同一上下文内可开多个标签页共享登录态。
 //
-// 与 ProfileManager（每个档案一个独立 Chrome 进程）相比，BrowserContext 更轻量：
-// 多账户共用一个浏览器进程，创建/销毁快、资源占用低，适合账户数量较多的场景。
-// 代价是它是内存态——Chrome 关闭后登录态不保留（如需持久化，可配合 Tab.ExportCookies /
-// ImportCookies 在关闭前导出、新建后导入）。
+// 与 ProfileManager（每档案一个独立 Chrome 进程）相比更轻量：多账户共用一个浏览器进程，
+// 创建/销毁快、占用低。代价是内存态——Chrome 关闭后登录态不保留（如需持久化，配合
+// Tab.ExportCookies / ImportCookies 在关闭前导出、新建后导入）。
 //
-// 实现说明：不使用 chromedp.WithNewBrowserContext，因为它内部 createTarget 未带 newWindow，
-// 在 Chrome 153+ 上会报 "no browser is open (-32000)"。这里改为手动编排 CDP：
-// createBrowserContext → createTarget(browserContextID, newWindow=true) → WithTargetID attach，
-// 销毁时 disposeBrowserContext。首个 target 必须开新窗口，后续 target 才能作为标签页落入该窗口。
+// 实现：不用 chromedp.WithNewBrowserContext（其 createTarget 未带 newWindow，Chrome 153+ 报
+// "no browser is open"），改为手动编排 CDP：createBrowserContext → createTarget(newWindow=true)
+// → WithTargetID attach，销毁时 disposeBrowserContext。首个 target 必须开新窗口，后续 target 才能落入。
 //
-// 生命周期：调用 Close 会销毁整个上下文（其下所有标签页与 Cookie 一并清除）。
+// 生命周期：调用 Close 销毁整个上下文（其下所有标签页与 Cookie 一并清除）。
 type BrowserContext struct {
 	name    string
 	browser *Browser
@@ -85,14 +83,12 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 	b.ctxMu.Lock()
 	defer b.ctxMu.Unlock()
 
-	// 同名复用
 	if bc, ok := b.contexts[name]; ok && !bc.isClosed() {
 		return bc, nil
 	}
 
 	// 手动创建隔离 browser context，并在其中开首个 target（必须 newWindow=true）。
-	// browser 级 CDP 调用用 boundedRootCtx 约束：既保留 browser 路由，又受调用方 ctx
-	// 取消/超时保护，Chrome 无响应时不会永久阻塞。
+	// browser 级 CDP 调用用 boundedRootCtx 约束：保留 browser 路由，又受调用方 ctx 取消/超时保护。
 	var bcID cdp.BrowserContextID
 	var firstID target.ID
 	runCtx, cancelRun := b.boundedRootCtx(ctx)
@@ -127,12 +123,9 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 
 	// attach 一个 chromedp 上下文到首个 target，作为该上下文的根标签页。
 	//
-	// 走 newTabCtx 而不是就地手写 NewContext + tabInitBudget + cdpkit.RunAbandonable：
-	// 首次 attach 的超时约束（见 BUG-07）与 Browser.NewTab 是同一条规则，
-	// 抄第二遍迟早会漏。ctx 只约束「等待预算」，Run 仍跑在长命的 tab 上下文上，
-	// Chrome 无响应时不会把调用方永久挂住，也不会掐断 target 的事件分发 goroutine。
-	//
-	// 失败时照旧回收已建的隔离上下文，避免留下一个没有任何标签页的空上下文。
+	// 走 newTabCtx 而非就地手写 NewContext + tabInitBudget + RunAbandonable：首次 attach 的
+	// 超时约束（BUG-07）与 Browser.NewTab 是同一条规则。ctx 只约束等待预算，Run 仍跑在长命
+	// tab 上下文上。失败时回收已建的隔离上下文，避免留下空上下文。
 	firstCtx, firstCancel, err := b.newTabCtx(ctx, chromedp.WithTargetID(firstID))
 	if err != nil {
 		b.disposeBrowserContext(bcID)
@@ -157,21 +150,13 @@ func (b *Browser) disposeBrowserContext(bcID cdp.BrowserContextID) {
 	if bcID == "" {
 		return
 	}
-	// rootCtx 为 nil 说明连接已经没了（并发 Close 会把它置 nil，见 connectedRootCtx）：
-	// 这个 CDP 上下文随整条连接一起消失，既没有可用的 browser executor 可发 dispose，
-	// 也没必要再发。少了这一步的后果是**真实 panic**，已有调用栈复现（rootCtx==nil 即可稳定触发）：
+	// rootCtx 为 nil 说明连接已失效（并发 Close 会置 nil，见 connectedRootCtx）：该 CDP 上下文
+	// 随整条连接消失，既无 browser executor 可发 dispose，也无必要再发。少了这步会真实 panic：
+	// WithDefaultTimeout(nil,...) 原样返回 nil → chromedp.Run(nil,...) → FromContext(nil) 对 nil
+	// 接口调 ctx.Value → nil pointer dereference。触发路径是 teardown 与建号并发。
 	//
-	//	cdpkit.WithDefaultTimeout(nil, ...) 的 nil 分支原样返回 nil
-	//	→ chromedp.Run(nil, ...)
-	//	→ chromedp.FromContext(nil) 对 nil 接口调 ctx.Value
-	//	→ panic: invalid memory address or nil pointer dereference
-	//
-	// 触发路径是 teardown 与建号并发：Context() 已建好 CDP 上下文、正在 attach 时
-	// Close() 把 rootCtx 置 nil，attach 失败分支随即来这里回收 → 撞上 nil。
-	//
-	// 快照刻意不加锁：本方法会经由 Browser.Context 在**持有 ctxMu** 时被调用（它 defer 释放），
-	// 而全局锁序是 mu → connMu → ctxMu；在这里补一次 b.mu.Lock() 就成了反向加锁，
-	// 与 Close「持 mu 等 ctxMu」构成 ABBA。boundedRootCtx 同样是先取快照、再判空。
+	// 快照刻意不加锁：本方法经 Browser.Context 在持有 ctxMu 时被调用，而全局锁序是
+	// mu → connMu → ctxMu，在此补 b.mu.Lock() 会与 Close「持 mu 等 ctxMu」构成 ABBA。
 	rootCtx := b.rootCtx
 	if rootCtx == nil {
 		return
@@ -200,9 +185,9 @@ func (b *Browser) Contexts() []string {
 // Name 返回隔离上下文的名字。
 func (bc *BrowserContext) Name() string { return bc.name }
 
-// NewTab 在该隔离上下文内新建一个标签页并返回。
-// 首次调用复用创建上下文时预建的 target（那个新窗口）；之后每次调用都在同一上下文内新建标签页，
-// 落入首个窗口。返回的 *Tab 与 Browser 上的 Tab 用法完全一致（ctx 仍需从 tab.Ctx 派生）。
+// NewTab 在该隔离上下文内新建并返回一个标签页。
+// 首次调用复用创建上下文时预建的 target（那个新窗口），之后每次在同一上下文内新建标签页落入首个窗口。
+// 返回的 *Tab 与 Browser 上的 Tab 用法一致（ctx 仍需从 tab.Ctx 派生）。
 func (bc *BrowserContext) NewTab(ctx context.Context) (*page.Tab, error) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
@@ -221,7 +206,7 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*page.Tab, error) {
 		return tab, nil
 	}
 
-	// 后续：在同一 browser context 内新建 target（已有窗口，无需 newWindow，作为标签页落入）
+	// 后续：在同一 browser context 内新建 target（已有窗口，无需 newWindow，作为标签页落入）。
 	// browser 级 CDP 调用用 boundedRootCtx 约束，受调用方 ctx 取消/超时保护。
 	var tid target.ID
 	runCtx, cancelRun := bc.browser.boundedRootCtx(ctx)
@@ -250,8 +235,7 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*page.Tab, error) {
 
 // applyAntiDetect 给隔离上下文内的新建标签页注入反检测脚本。
 //
-// 刻意不返回 error：注入反检测脚本属于增强能力，失败只告警、绝不让 NewTab 失败。
-// 否则使用者会因为「stealth 脚本没注入上」而完全拿不到标签页，得不偿失。
+// 刻意不返回 error：注入属增强能力，失败只告警，绝不让 NewTab 失败。
 func (bc *BrowserContext) applyAntiDetect(tab *page.Tab) {
 	if err := page.InjectAntiDetect(tab.Ctx, tab, bc.browser.opts); err != nil {
 		bc.browser.opts.Logger.Warn("注入反检测脚本失败", "context", bc.name, "tab", tab.ID, "err", err)
@@ -274,8 +258,8 @@ func (bc *BrowserContext) CloseTab(ctx context.Context, tab *page.Tab) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	// 通过 browser 级连接关闭目标，避免依赖调用方传入的 ctx 是否携带路由；
-	// 用 boundedRootCtx 约束，Chrome 无响应时不会把调用方永久挂住。
+	// 通过 browser 级连接关闭目标，不依赖调用方 ctx 是否携带路由；用 boundedRootCtx 约束，
+	// Chrome 无响应时不会把调用方永久挂住。
 	runCtx, cancelRun := bc.browser.boundedRootCtx(ctx)
 	defer cancelRun()
 	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {

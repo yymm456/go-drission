@@ -11,28 +11,24 @@ import (
 
 // Element 是「一个待操作的页面元素」：选择器 + 所属标签页。
 //
-// 设计上刻意把「怎么找」和「做什么」拆成两步，把选择器从每次调用里提出来：
+// 把「怎么找」和「做什么」拆成两步，选择器只出现一次：
 //
 //	tab.EleID("username").SendKeys(ctx, "xxx")
 //	tab.EleCSS(".p-button-label").Click(ctx)
 //	title, _ := tab.EleCSS("h1").Text(ctx)
 //
-// 相比旧写法 tab.SendKeys(ctx, chromium.ID("username"), "xxx")，
-// 选择器只出现一次，读起来就是「找到什么 → 对它做什么」。
-//
 // # 不缓存 DOM 节点
 //
-// Element 只保存选择器，**每次操作都重新查询一遍**。这不是偷懒，是 SPA 场景下的
-// 硬性要求：Vue/React 重渲染会把旧节点整批换成新节点，缓存的 nodeID 会变成
-// detached 节点——此时读属性拿到的是旧值，点击会静默无效，而且完全不报错。
-// 重新查询的成本是一次 CDP 往返，比排查「为什么点了没反应」便宜得多。
+// Element 只保存选择器，每次操作都重新查询。SPA 下 Vue/React 重渲染会把旧节点整批替换，
+// 缓存的 nodeID 会变成 detached 节点——读属性拿到旧值、点击静默无效且不报错。
+// 重新查询的成本是一次 CDP 往返。
 //
 // # 错误语义（均可用 errors.Is 判断）
 //
 //   - 选择器为空（如 EleCSS("")）→ ErrSelectorRequired
 //   - 元素不存在 / 等待超时 → ErrElementNotFound
 //
-// 各操作都接受调用方 ctx（应从 tab.Ctx 派生），超时与取消由调用方掌控。
+// 各操作接受调用方 ctx（应从 tab.Ctx 派生），超时与取消由调用方掌控。
 type Element struct {
 	tab *Tab
 	sel Selector
@@ -40,12 +36,12 @@ type Element struct {
 
 // ---------- 查询入口（Tab 上）----------
 
-// Ele 用显式选择器构造元素，选择器请用本包的构造器声明定位方式。
+// Ele 用显式选择器构造元素。
 //
 //	tab.Ele(chromium.CSS("#login"))
 //	tab.Ele(chromium.XPath("//button[text()='登录']"))
 //
-// 一般用不着它，EleCSS / EleID / EleXPath / EleJS 更顺手。
+// 一般用 EleCSS / EleID / EleXPath / EleJS 更方便。
 func (t *Tab) Ele(sel Selector) *Element {
 	return &Element{tab: t, sel: sel}
 }
@@ -96,8 +92,7 @@ func (e *Element) String() string {
 	return fmt.Sprintf("%s=%q", e.sel.Mode(), e.sel.String())
 }
 
-// node 重新查询一次并返回第一个匹配节点。
-// 所有节点级操作（ClickJS / SetValue / Eval）都经由它，因此天然不缓存。
+// node 重新查询一次并返回第一个匹配节点。所有节点级操作（ClickJS / SetValue / Eval）都经由它，故天然不缓存。
 func (e *Element) node(ctx context.Context) (*cdp.Node, error) {
 	return e.tab.firstNode(ctx, e.sel)
 }
@@ -188,21 +183,17 @@ func (e *Element) Attribute(ctx context.Context, name string) (string, error) {
 
 // Count 返回该选择器匹配到的元素数量。
 //
-// 注意语义：它统计的是「选择器命中多少个」，不要求元素唯一。
-// 因此 Count 为 0 是正常返回值（不是错误），用 err 判断即可。
+// 统计的是「选择器命中多少个」，不要求唯一；Count 为 0 是正常返回值（非错误），用 err 判断即可。
 //
-// 四种定位方式一律走一次 JS 求值（与 FrameElement.Count 对齐）：既省掉把节点树
-// 拉回来的开销，也保证「未命中」在每种方式下都是 0。早期只有 CSS 分支走 JS，
-// XPath / ID 走 chromedp.Nodes——而 chromedp 的节点查询在命中前会一直重试到
-// ctx 到期，于是未命中变成「白等一个完整超时再报错」，与上面这段文档自相矛盾
-// （历史缺陷 BUG-04）。
+// 四种定位方式一律走一次 JS 求值（与 FrameElement.Count 对齐）：既省掉拉回节点树的开销，
+// 也保证「未命中」在每种方式下都是 0。chromedp.Nodes 在命中前会重试到 ctx 到期，会让未命中
+// 变成「白等一个完整超时再报错」（BUG-04）。
 func (e *Element) Count(ctx context.Context) (int, error) {
 	if err := e.sel.validate(); err != nil {
 		return 0, err
 	}
 
-	// 选择器 → 计数 JS 的映射收敛在 selectorCountJS，与 FrameElement.Count 共用同一份；
-	// 两条路径各写一份 mode 分支迟早会漂移（这段分支历史上就出过 BUG-04）。
+	// 选择器 → 计数 JS 的映射收敛在 selectorCountJS，与 FrameElement.Count 共用一份，避免两条路径的 mode 分支漂移（BUG-04）。
 	js := selectorCountJS(e.sel)
 
 	var count int
@@ -214,14 +205,13 @@ func (e *Element) Count(ctx context.Context) (int, error) {
 
 // Eval 在该元素上执行 JS 并返回结果，函数体内 this 即该元素。
 //
-// fn 支持三种写法，会自动识别（省掉每次手写 function 包装的噪音）：
+// fn 支持三种写法，会自动识别：
 //
 //	el.Eval(ctx, "this.innerText")                        // 表达式
 //	el.Eval(ctx, "return this.dataset.id")                // 函数体
 //	el.Eval(ctx, "function(){ return this.tagName }")     // 完整函数声明
 //
-// 走 Runtime.callFunctionOn 直接作用于节点，因此 Shadow DOM 内的元素、
-// 无法用 CSS 表达的选择器（XPath / JS path）都能一致地参与求值。
+// 走 Runtime.callFunctionOn 直接作用于节点，Shadow DOM 内元素与 XPath / JS path 选择器都能一致求值。
 // 元素不存在时返回 ErrElementNotFound。
 func (e *Element) Eval(ctx context.Context, fn string) (any, error) {
 	node, err := e.node(ctx)
@@ -268,13 +258,12 @@ func (e *Element) Wait() *WaitBuilder {
 
 // toFunctionDecl 把用户传入的 JS 片段规整成 runtime.callFunctionOn 需要的函数声明。
 //
-// callFunctionOn 只接受函数声明，直接传 "this.innerText" 会被浏览器
-// 当成语法错误（"not a function"）。这里做最小猜测：
-//   - 已经是 function / 箭头函数 → 原样用；
+// callFunctionOn 只接受函数声明，直接传 "this.innerText" 会被当成语法错误。这里做最小猜测：
+//   - 已是 function / 箭头函数 → 原样用；
 //   - 单表达式（无分号、无换行、不以语句关键字开头）→ 包成 return (expr)；
 //   - 其余（多语句函数体）→ 包成 function(){ ... }。
 //
-// 猜测失败时不会静默：浏览器会抛出异常，错误信息里带原始 JS，足以定位。
+// 猜测失败不会静默：浏览器抛异常，错误信息带原始 JS，足以定位。
 func toFunctionDecl(fn string) string {
 	s := strings.TrimSpace(fn)
 	switch {

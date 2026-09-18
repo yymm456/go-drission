@@ -13,9 +13,8 @@ import (
 
 // CookieItem 是一条可序列化的 Cookie。
 //
-// 字段名刻意与 chromium.Cookie 对齐，因此浏览器导出的 cookies.json 可以直接被
-// Session 载入，反之 Session 导出的文件也能被浏览器导入——两套会话可以互相接力。
-// Expires 是 Unix 时间戳（秒，可为小数）；<= 0 表示会话 Cookie（关闭即失效）。
+// 字段名刻意与 chromium.Cookie 对齐，浏览器导出的 cookies.json 可直接被 Session 载入，反之亦然，
+// 两套会话可互相接力。Expires 是 Unix 时间戳（秒，可为小数）；<= 0 表示会话 Cookie（关闭即失效）。
 type CookieItem struct {
 	Name     string  `json:"name"`
 	Value    string  `json:"value"`
@@ -26,10 +25,9 @@ type CookieItem struct {
 	SameSite string  `json:"same_site"`
 	Expires  float64 `json:"expires"`
 
-	// Partitioned / PartitionKey 对应 CHIPS（Cookies Having Independent
-	// Partitioned State）分区 Cookie。早期版本没有这两个字段，导出再导入会把
-	// 分区属性抹掉——浏览器要么当普通 Cookie 收下（语义变了），要么直接拒收。
-	// PartitionKey 是写入时顶层站点的 site（形如 "https://example.com"）。
+	// Partitioned / PartitionKey 对应 CHIPS（Cookies Having Independent Partitioned State）分区
+	// Cookie。缺这两个字段时，导出再导入会把分区属性抹掉——浏览器要么当普通 Cookie 收下（语义变了），
+	// 要么直接拒收。PartitionKey 是写入时顶层站点的 site（形如 "https://example.com"）。
 	Partitioned  bool   `json:"partitioned,omitempty"`
 	PartitionKey string `json:"partition_key,omitempty"`
 }
@@ -58,11 +56,10 @@ func (e *entry) expired(now time.Time) bool {
 
 // Jar 是一个可导出、可复用的 Cookie 容器，实现了 http.CookieJar 接口。
 //
-// 为什么不直接用标准库 cookiejar：标准库的实现不提供任何导出/导入能力，
-// 而爬虫场景最刚需的就是「浏览器登录完把 Cookie 交给 Session 批量抓」以及
-// 「把登录态存盘下次接着用」。这里自己实现，把这两件事做成一等公民。
+// 不用标准库 cookiejar：它不提供导出/导入能力，而爬虫场景最刚需的就是「浏览器登录后把 Cookie
+// 交给 Session 批量抓」与「把登录态存盘下次接着用」。这里自己实现，把这两件事做成一等公民。
 //
-// 所有方法都是并发安全的。
+// 所有方法并发安全。
 type Jar struct {
 	mu      sync.RWMutex
 	entries map[string]map[string]*entry // domain -> key(name\x00path) -> entry
@@ -73,12 +70,10 @@ func NewJar() *Jar {
 	return &Jar{entries: map[string]map[string]*entry{}}
 }
 
-// canonicalHost 规范化主机名：去掉端口与方括号，统一小写，并剥掉前导点。
+// canonicalHost 剥掉端口与方括号后转小写。
 //
-// 端口必须交给标准库去剥：手写「含冒号就按端口截断」对 IPv6 是错的——
-// 裸 "::1" 的冒号在位置 0，会被截成空串（Cookie 静默丢失），
-// "[::1]:8080" 不以 "[" 结尾，方括号只剥掉前半个，残留 "::1]:8080"。
-// net.SplitHostPort 只在「确实带端口」时才成功，上面两种形态都会返回 error 而原样保留。
+// 端口必须交给标准库剥：手写「含冒号就按端口截断」对 IPv6 是错的——裸 "::1" 会被截成空串，
+// "[::1]:8080" 残留 "::1]:8080"。net.SplitHostPort 只在确实带端口时才成功，上述形态都返回 error 而原样保留。
 func canonicalHost(host string) string {
 	h := strings.TrimSpace(host)
 	if hostOnly, _, err := net.SplitHostPort(h); err == nil {
@@ -89,21 +84,15 @@ func canonicalHost(host string) string {
 	return strings.ToLower(h)
 }
 
-// validCookieDomain 判断一条 Cookie 的 Domain 是否可以接受。
+// validCookieDomain 判断一条 Cookie 的 Domain 是否可接受。
 //
-// host 是「写入来源主机」（响应路径下即请求 URL 的 host）。两道检查都源自
-// RFC 6265 §5.3 的第 5/6 步：
+// host 是写入来源主机（响应路径下即请求 URL 的 host）。两道检查均源自 RFC 6265 §5.3 第 5/6 步：
 //
-//  1. 归属：域级 Cookie 的 Domain 必须是来源主机本身或其上级域，否则就是
-//     「无关站点给别人的域投毒」；
-//  2. 公共后缀：com / co.uk / github.io 这类纯后缀一律拒收，否则任意一个
-//     .com 站点都能给所有 .com 域写 Cookie（跨站 Cookie 投毒）。
+//  1. 归属：域级 Cookie 的 Domain 必须是来源主机本身或其上级域，否则是无关站点给别人域投毒；
+//  2. 公共后缀：com / co.uk / github.io 这类纯后缀一律拒收，否则任意 .com 站点都能给所有 .com 域写 Cookie。
 //
-// 文件导入路径（Jar.Load）没有来源主机，传空串 host 即跳过第 1 道——
-// 但第 2 道与来源无关，任何写入路径都不能放过。
-//
-// 抽成一个函数是为了让 Jar.SetCookies 与 Jar.Load 共用同一套规则：
-// 这两条写入路径各自内联一份时，规则很容易只在其中一条上生效（历史缺陷 BUG-01）。
+// 文件导入路径（Jar.Load）没有来源主机，传空串 host 即跳过第 1 道；第 2 道与来源无关，任何写入路径
+// 都不能放过。抽成一个函数让 SetCookies 与 Load 共用同一套规则，避免规则只在其中一条路径生效（BUG-01）。
 func validCookieDomain(host, domain string) bool {
 	if domain == "" {
 		return false
@@ -138,9 +127,8 @@ func (j *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 			continue
 		}
 
-		// 浏览器拒收「SameSite=None 但没有 Secure」的 Cookie（RFC 6265bis）。
-		// 照单全收会制造「本地能过、浏览器不行」的差异——同一条登录态在
-		// Session 里可用、交给浏览器却消失，排查起来极难。这里与浏览器保持一致。
+		// 浏览器拒收「SameSite=None 但没有 Secure」的 Cookie（RFC 6265bis）。照单全收会制造
+		// 「本地能过、浏览器不行」的差异，这里与浏览器保持一致。
 		if c.SameSite == http.SameSiteNoneMode && !c.Secure {
 			continue
 		}
@@ -150,8 +138,8 @@ func (j *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		if c.Domain != "" {
 			domain = canonicalHost(c.Domain)
 			hostOnly = false
-			// 归属检查（须是来源域名本身或其上级域）与公共后缀检查都收敛在
-			// validCookieDomain 内，Load 走同一个函数，避免两条写入路径的规则漂移。
+			// 归属检查（须是来源域名本身或其上级域）与公共后缀检查都收敛在 validCookieDomain 内，
+			// Load 走同一函数，避免两条写入路径的规则漂移。
 			if !validCookieDomain(host, domain) {
 				continue
 			}
@@ -164,7 +152,7 @@ func (j *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 
 		key := c.Name + "\x00" + path
 
-		// 删除语义：MaxAge<0，或 MaxAge==0 且 Expires 已过
+		// MaxAge < 0 表示删除同名 Cookie
 		expires := float64(0)
 		switch {
 		case c.MaxAge < 0:
@@ -212,9 +200,7 @@ func partitionedKey(partitioned bool, u *url.URL) string {
 }
 
 // Cookies 实现 http.CookieJar：返回该 URL 应当携带的 Cookie。
-//
-// 匹配规则：域名（hostOnly 精确匹配 / 否则匹配自身及子域）、路径前缀、
-// 未过期、Secure 仅用于 https。过期项在返回前顺手清理。
+// 匹配语义集中在 matchRequest；过期项在返回前顺手清理。
 func (j *Jar) Cookies(u *url.URL) []*http.Cookie {
 	if u == nil {
 		return nil
@@ -246,8 +232,7 @@ func (j *Jar) Cookies(u *url.URL) []*http.Cookie {
 			if !matchRequest(e, host, domain, reqPath, https) {
 				continue
 			}
-			//nolint:gosec // G124：这里是把服务端下发的属性原样回放给 net/http，
-			// 凭空补 Secure/HttpOnly/SameSite 会改变 Cookie 语义，是相反的错误。
+			//nolint:gosec // G124：原样回放服务端下发的属性；凭空补 Secure/HttpOnly/SameSite 会改变 Cookie 语义。
 			out = append(out, &http.Cookie{
 				Name:        e.Name,
 				Value:       e.Value,
@@ -274,19 +259,17 @@ func (j *Jar) Cookies(u *url.URL) []*http.Cookie {
 
 // All 返回容器内全部 Cookie（含已过期项），用于持久化。
 //
-// 域级 Cookie（hostOnly=false）导出时会在 Domain 前补回前导点（如 ".example.com"）。
-// 前导点是 Netscape/Chrome 通用的「域级 Cookie」标记，也是唯一能跨 JSON 往返
-// 携带 hostOnly 语义的载体（CookieItem 无独立的 hostOnly 字段）。不补点的话，
-// Save→Load 后域级 Cookie 会退化成 host-only，丢失子域匹配能力。
+// 域级 Cookie 导出时会在 Domain 前补回前导点（".example.com"）：前导点是唯一能跨 JSON 往返
+// 携带 hostOnly 语义的载体，不补点的话 Save→Load 后会退化成 host-only。
 //
-// 存盘请用本方法（过期项要留着，否则会话 Cookie 的「失效时间」信息会在
-// 一次存盘往返后丢失）；只是想知道「当前有哪些 Cookie」请用 Valid。
+// 存盘用本方法（过期项要留着，否则会话 Cookie 的失效时间会在一次存盘往返后丢失）；
+// 只想看当前有哪些 Cookie 用 Valid。
 func (j *Jar) All() []CookieItem { return j.snapshot(false) }
 
-// Valid 返回容器内当前仍然有效的 Cookie（已剔除过期项），即「此刻真正会发出去的」集合。
+// Valid 返回容器内当前仍有效的 Cookie（已剔除过期项），即「此刻真正会发出去的」集合。
 //
-// 与 All 的区别只在于过期项：All 面向持久化，Valid 面向「现在这个会话的登录态是什么」。
-// 调用方遍历它以构造请求头、做站点间搬运算时应当用本方法。
+// 与 All 的区别只在过期项：All 面向持久化，Valid 面向「当前会话的登录态」。遍历构造请求头、
+// 做站点间搬运用本方法。
 func (j *Jar) Valid() []CookieItem { return j.snapshot(true) }
 
 func (j *Jar) snapshot(validOnly bool) []CookieItem {
@@ -309,9 +292,9 @@ func (j *Jar) snapshot(validOnly bool) []CookieItem {
 
 // CookiesFor 返回访问 rawURL 时实际会携带的 Cookie 快照（已按域名、路径、Secure、过期过滤）。
 //
-// 这是「把登录态交给浏览器」时该用的接口：全量导出会把站点 A 的 Cookie 也塞进站点的
-// 浏览器里，而按目标 URL 过滤后只留下真正用得上的那几条，语义与一次真实请求完全一致。
-// rawURL 非法时返回 ErrEmptyURL / ErrInvalidURL / ErrUnsupportedProtocol。
+// 「把登录态交给浏览器」时该用本接口：全量导出会把站点 A 的 Cookie 也塞进站点 B，按目标 URL 过滤后
+// 只留真正用得上的那几条，语义与一次真实请求一致。rawURL 非法时返回 ErrEmptyURL / ErrInvalidURL /
+// ErrUnsupportedProtocol。
 func (j *Jar) CookiesFor(rawURL string) ([]CookieItem, error) {
 	u, err := parseHTTPURL(rawURL)
 	if err != nil {
@@ -347,8 +330,7 @@ func (j *Jar) CookiesFor(rawURL string) ([]CookieItem, error) {
 	return out, nil
 }
 
-// exportItem 把内部 entry 转成可序列化的 CookieItem。
-// 域级 Cookie 会在 Domain 前补上前导点，以便跨 JSON 往返保住 hostOnly 语义。
+// exportItem 把内部 entry 转成可序列化的 CookieItem；域级 Cookie 补回前导点，原因见 All。
 func exportItem(e *entry) CookieItem {
 	item := e.CookieItem
 	if !e.hostOnly && !strings.HasPrefix(item.Domain, ".") {
@@ -384,21 +366,17 @@ func (j *Jar) Load(items []CookieItem) int {
 		if it.Name == "" {
 			continue
 		}
-		// 与 SetCookies 同一条规则：SameSite=None 必须带 Secure，否则浏览器会拒收。
+		// 同 SetCookies：SameSite=None 必须带 Secure，否则浏览器拒收。
 		if strings.EqualFold(it.SameSite, sameSiteNone) && !it.Secure {
 			continue
 		}
 		hostOnly := !strings.HasPrefix(strings.TrimSpace(it.Domain), ".")
 		domain := canonicalHost(it.Domain)
-		// 文件导入没有「来源主机」，传空 host 即跳过归属检查；公共后缀检查与来源
-		// 无关，任何路径都不放过——否则一份来路不明的 cookies.json 里放一条
-		// Domain=".com"，之后所有 .com 域请求都会带上它。
+		// 文件导入无来源主机，传空 host 跳过归属检查；公共后缀检查与来源无关，任何路径都不放过。
 		if !validCookieDomain("", domain) {
 			continue
 		}
-		// CHIPS 分区 Cookie 必须带 Secure（README「分区 Cookie」一节声明的组合为
-		// Secure + SameSite=None + Partitioned）。缺 Secure 的条目浏览器会拒收，
-		// 这里拦下，免得出现「导入报成功、登录态其实不完整」。
+		// CHIPS 分区 Cookie 必须带 Secure（Secure + SameSite=None + Partitioned），缺 Secure 的条目浏览器会拒收。
 		if it.Partitioned && !it.Secure {
 			continue
 		}
@@ -406,12 +384,8 @@ func (j *Jar) Load(items []CookieItem) int {
 		if path == "" {
 			path = "/"
 		}
-		// 内部统一存规范化（无前导点）的域名，map key 与匹配都基于它；
-		// hostOnly 单独记录，All 导出时再据此补回前导点。
-		it.Domain = domain
-		// SameSite 也做一次规范化，这样手写的 "none" / "strict" 与导出值
-		// 在文件里长得一样，save→load→save 不会来回变。
-		it.SameSite = sameSiteName(parseSameSite(it.SameSite))
+		it.Domain = domain                                     // 内部统一存无前导点的规范化域名；All 导出时补回
+		it.SameSite = sameSiteName(parseSameSite(it.SameSite)) // 归一化手写值
 		if j.entries[domain] == nil {
 			j.entries[domain] = map[string]*entry{}
 		}
@@ -442,12 +416,10 @@ func (j *Jar) Len() int {
 
 // ---------- 辅助 ----------
 
-// matchRequest 判断一条内部 Cookie 是否应当随 (host, reqPath, https) 的请求发出。
+// matchRequest 判断一条内部 Cookie 是否应随 (host, reqPath, https) 的请求发出。
 //
-// 不含「是否过期」：那是调用方各自的策略——Cookies 顺手删除过期项（持有写锁），
-// CookiesFor 只是跳过（持有读锁）。把「域名归属 + hostOnly + 路径前缀 + Secure」这四步
-// 收在一处，是因为 Cookies / CookiesFor 是同一个匹配语义的两个出口，
-// 各写一份必然漂移（写入路径的同类问题已经出过一次，见 validCookieDomain 的注释）。
+// 不含过期判断（由调用方自行处理）。「域名归属 + hostOnly + 路径前缀 + Secure」四步收在一处，
+// 因为 Cookies / CookiesFor 是同一匹配语义的两个出口。
 func matchRequest(e *entry, host, domain, reqPath string, https bool) bool {
 	if e.hostOnly && domain != host {
 		return false

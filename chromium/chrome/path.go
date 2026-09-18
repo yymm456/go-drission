@@ -61,8 +61,7 @@ func findChrome() string {
 	return chromePathCached
 }
 
-// SearchedChromePaths 返回最近一次自动查找时枚举过的全部路径。
-// 主要用于排查「找不到浏览器」：错误里会列出这些位置，便于确认真实安装路径。
+// SearchedChromePaths 返回最近一次自动查找时枚举过的全部路径，公开文档见门面 chromium。
 func SearchedChromePaths() []string {
 	chromePathMu.Lock()
 	defer chromePathMu.Unlock()
@@ -72,8 +71,7 @@ func SearchedChromePaths() []string {
 	return out
 }
 
-// RefreshChromePath 丢弃缓存的浏览器路径，下次查找时重新枚举。
-// 场景：进程启动后用户才安装浏览器，或安装位置发生了变化。
+// RefreshChromePath 丢弃缓存的浏览器路径，下次查找时重新枚举，公开文档见门面 chromium。
 func RefreshChromePath() {
 	chromePathMu.Lock()
 	defer chromePathMu.Unlock()

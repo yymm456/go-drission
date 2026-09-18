@@ -11,7 +11,7 @@ import (
 
 // ---------- Cookie 注入前校验（CDP 之前必须拦住） ----------
 //
-// 校验逻辑本身（含「SameSite=None 必须带 Secure」）已随 S3 下沉到 cookie，
+// 校验逻辑本身（含「SameSite=None 必须带 Secure」）已下沉到 cookie 包，
 // 纯逻辑用例见 cookie/cookie_test.go 的 TestValidateCookieSameSiteNoneWithoutSecure；
 // 这里只守一件事：Tab 方法确实在发起 CDP 调用之前就把它拦下来了。
 

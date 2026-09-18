@@ -14,10 +14,8 @@ import (
 
 // Response 是一次请求的结果。
 //
-// 响应体在构造时就已读完并缓存，因此 Text / JSON / Bytes 可以任意多次调用；
-// 代价是整个响应体都进内存——抓大文件时请改用 Client() 拿底层 http.Client 自行流式处理，
-// 或先用 WithMaxBodySize 设一个上限，避免对端一个「误配成 8G」的响应把进程撑爆。
-// 嵌入的 *http.Response 里 Body 已被读取并关闭，不要再去读它。
+// 响应体在构造时已读完并缓存，Text / JSON / Bytes 可任意多次调用；代价是整个响应体进内存。
+// 抓大文件请改用 Client() 流式处理，或先用 WithMaxBodySize 设上限。嵌入的 *http.Response 的 Body 已读取并关闭。
 type Response struct {
 	*http.Response
 	body []byte
@@ -25,11 +23,11 @@ type Response struct {
 
 // newResponse 读取并缓存响应体，同时关闭底层 Body（避免连接泄漏）。
 //
-// maxBody 是响应体上限（字节），<= 0 表示不限。判超限的方式是「读满上限后再探一个字节」：
-// 先按上限读，只有正好读满时才额外读 1 字节，读得到就说明被截断了。
+// maxBody 是响应体上限（字节），<= 0 表示不限。判超限采用「读满上限后再探一个字节」：
+// 只有正好读满时才额外读 1 字节，读得到就说明被截断。
 //
-// 刻意不写成 io.LimitReader(body, maxBody+1)：maxBody 为 math.MaxInt64 时 +1 会回绕成
-// 负数，LimitReader 遇负数立即返回 EOF，整个正文被吞掉且不报任何错（历史缺陷 BUG-08）。
+// 不写成 io.LimitReader(body, maxBody+1)：maxBody 为 math.MaxInt64 时 +1 会回绕成负数，
+// LimitReader 遇负数立即返回 EOF，正文被吞掉且不报错（BUG-08）。
 func newResponse(resp *http.Response, maxBody int64) (*Response, error) {
 	if resp == nil {
 		return nil, ErrNilResponse
@@ -122,10 +120,9 @@ func contentTypeOf(resp *http.Response) string {
 	return ct
 }
 
-// SaveFile 把响应体写入文件（父目录自动创建），适合直接下载图片、附件。
+// SaveFile 把响应体写入文件（父目录自动创建），适合下载图片、附件。
 //
-// 目录 0750、文件 0640：响应体常含用户数据（订单、个人信息、接口返回的凭证），
-// 不该按 0755 / 0644 让同机其他用户直接读到。
+// 目录 0750、文件 0640：响应体常含用户数据，不应让同机其他用户直接读到。
 func (r *Response) SaveFile(path string) error {
 	if r == nil {
 		return ErrNilResponse

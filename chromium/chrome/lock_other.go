@@ -32,7 +32,7 @@ func AcquireProfileLock(userDataDir string) (*ProfileLock, error) {
 	return &ProfileLock{file: f}, nil
 }
 
-// release 解除 flock 并关闭锁文件。
+// Release 解除 flock 并关闭锁文件。
 func (l *ProfileLock) Release() {
 	if l == nil || l.file == nil {
 		return

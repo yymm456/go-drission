@@ -20,40 +20,23 @@ const (
 
 // Selector 描述「怎么定位一个元素」。
 //
-// 直接传裸字符串很容易出错：CSS、XPath、id、JS path 长得完全不一样，
-// 而底层 CDP 需要显式指定用哪种方式解析，猜错就报一堆含糊的 node not found。
-// 用构造器显式声明语义，让这类错误在写代码时就消失。
+// 底层 CDP 需显式指定解析方式，因此用构造器显式声明语义，避免传裸字符串猜错方式。
 type Selector struct {
 	expr string
 	mode selMode
 }
 
-// CSS 按 CSS 选择器定位（chromedp.ByQuery）。
-//
-//	chromium.CSS("div.item > a")
-//	chromium.CSS("#login")
+// CSS 按 CSS 选择器定位（chromedp.ByQuery），公开文档见门面 chromium。
 func CSS(sel string) Selector { return Selector{expr: sel, mode: modeCSS} }
 
-// XPath 按 XPath 表达式定位（chromedp.BySearch）。
-//
-//	chromium.XPath("//div[@class='item']/a")
-//	chromium.XPath("//button[text()='登录']")
+// XPath 按 XPath 表达式定位（chromedp.BySearch），公开文档见门面 chromium。
 func XPath(expr string) Selector { return Selector{expr: expr, mode: modeXPath} }
 
-// ID 按元素 id 定位（chromedp.ByID），不需要写 '#' 前缀。
-//
-//	chromium.ID("username")
+// ID 按元素 id 定位（chromedp.ByID），不需要写 '#' 前缀，公开文档见门面 chromium。
 func ID(id string) Selector { return Selector{expr: id, mode: modeID} }
 
-// JS 直接用一段「返回 DOM 元素的 JS 表达式」定位（chromedp.ByJSPath）。
-//
-// 表达式会被交给 Runtime.evaluate 执行，因此必须是可信内容（不做任何转义）。
-// 它最大的用处是拿到其它三种方式都够不着的元素，典型是 Shadow DOM：
-//
-//	chromium.JS(`document.querySelector('#host').shadowRoot.querySelector('#inner')`)
-//	chromium.JS(`document.querySelector('#main-title')`)
-//
-// 注意：这只支持返回单个元素；要取多个请改用 CSS + 遍历。
+// JS 用一段「返回 DOM 元素的 JS 表达式」定位（chromedp.ByJSPath），公开文档见门面 chromium。
+// 表达式必须是可信内容（Runtime.evaluate 不做转义）；只支持返回单个元素。
 func JS(expr string) Selector { return Selector{expr: expr, mode: modeJSPath} }
 
 // String 返回选择器的原始表达式，便于日志与错误信息排查。
@@ -75,18 +58,14 @@ func (s Selector) Mode() string {
 
 // Empty 判断选择器是否为空（未构造、传了空字符串，或只有空白字符）。
 //
-// 判空必须带 TrimSpace：`CSS(prefix + suffix)` 在变量为空时很容易拼出 "   "，
-// 它既不是空串也定位不到任何东西，直接发给浏览器只会得到
-// 「'   ' is not a valid selector」这种底层语法错误——调用方看不出是自己漏传了参数。
-// 这里只用于判定、不改写原表达式：JS 模式的表达式理论上可以含前导空白。
+// 判空必须带 TrimSpace：`CSS(prefix + suffix)` 在变量为空时会拼出 "   "，它既非空串也定位不到
+// 任何东西，直接发给浏览器只会得到底层语法错误。只用于判定、不改写原表达式（JS 模式可含前导空白）。
 func (s Selector) Empty() bool { return strings.TrimSpace(s.expr) == "" }
 
 // validate 在发起 CDP 调用之前拦住空选择器。
 //
-// 空表达式传到浏览器会变成 querySelector("") 并抛 SyntaxError，
-// 从错误信息完全看不出是调用方漏传参数；更糟的是某些实现会静默命中根节点，
-// 让「忘了传选择器」变成一个看起来正常的错误结果。这里统一转成
-// ErrSelectorRequired，调用方用 errors.Is 就能判断。
+// 空表达式传到浏览器会变成 querySelector("") 并抛 SyntaxError，从错误信息看不出是调用方漏传参数；
+// 某些实现甚至会静默命中根节点。这里统一转成 ErrSelectorRequired，调用方用 errors.Is 即可判断。
 func (s Selector) validate() error {
 	if s.Empty() {
 		return fmt.Errorf("%w: 选择器为空（%s）", errs.ErrSelectorRequired, s.Mode())
@@ -129,17 +108,14 @@ func (s Selector) jsExpr() string {
 
 // selectorCountJS 生成「统计该选择器命中多少个元素」的 JS 表达式。
 //
-// 与 jsExpr 一样收敛在 Selector 上：Element.Count 与 FrameElement.Count 走的是
-// 两条完全不同的通道（前者经 chromedp.Evaluate，后者在框架 isolated world 里
-// Runtime.evaluate），但「选择器 → 计数 JS」这一步必须完全一致。
-// 早期两边各写一份 mode 分支，case 顺序与取值（sel.expr / sel.String()）都不同，
-// 只是恰好等价——一旦有一边新增模式，另一边会静默落进 default，数错个数还不报错。
+// 与 jsExpr 一样收敛在 Selector 上：Element.Count（经 chromedp.Evaluate）与 FrameElement.Count
+// （在框架 isolated world 里 Runtime.evaluate）走两条不同通道，但「选择器 → 计数 JS」必须一致，
+// 否则一边新增模式时另一边会静默落进 default 而数错个数。
 //
 // 语义：
-//   - XPath：count(...) 返回数字，必须请求 NUMBER_TYPE(1)；表达式用 %q 拼进 JS，
-//     XPath 里带双引号的属性值（//div[@data-x="a"]）才不会把字符串提前截断。
+//   - XPath：count(...) 返回数字，必须请求 NUMBER_TYPE(1)；表达式用 %q 拼进 JS，避免带双引号的属性值提前截断字符串。
 //   - CSS：querySelectorAll(...).length。
-//   - ID / JS path：语义上是「单个元素」，命中 1、未命中 0。
+//   - ID / JS path：语义上是单个元素，命中 1、未命中 0。
 func selectorCountJS(sel Selector) string {
 	switch sel.mode {
 	case modeXPath:

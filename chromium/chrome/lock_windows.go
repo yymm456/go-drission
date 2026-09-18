@@ -42,7 +42,7 @@ func AcquireProfileLock(userDataDir string) (*ProfileLock, error) {
 	return &ProfileLock{path: path, handle: h}, nil
 }
 
-// release 关闭锁句柄，允许其他实例获取该数据目录。
+// Release  关闭锁句柄，允许其他实例获取该数据目录。
 func (l *ProfileLock) Release() {
 	if l == nil || l.handle == syscall.InvalidHandle {
 		return

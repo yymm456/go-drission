@@ -198,7 +198,6 @@ func demoTabSwitching(ctx context.Context, browser *chromium.Browser) {
 	}
 	fmt.Printf("    ctxA 标签1 windowID=%d 标签2 windowID=%d 同窗口=%v\n", wid1, wid2, wid1 == wid2)
 
-	// 同一窗口内来回切换两个标签
 	if err := tab2.BringToFront(t2Ctx); err == nil {
 		fmt.Println("    已切到 标签2（大字标记页）")
 		shot := filepath.Join(shotDir, "single_tab_switch.png")

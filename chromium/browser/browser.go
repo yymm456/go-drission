@@ -19,40 +19,34 @@ import (
 	"github.com/yymm456/go-drission/chromium/page"
 )
 
-// Browser 持有整个浏览器连接和所有标签页
+// Browser 持有浏览器连接与全部标签页。
 //
 // # 锁序
 //
-// 本类型有三把锁，加锁必须遵守下面的顺序，否则会形成环：
+// 三把锁必须按固定顺序获取，否则会成环：
 //
-//	mu（tabs 与 closed） → connMu（连接状态） → ctxMu（contexts 注册表）
+//	mu（tabs / closed） → connMu（连接状态） → ctxMu（contexts 注册表）
 //
-// 实践中没有任何路径会同时持有两把以上的锁做 I/O；Browser.Close 是唯一
-// 按 mu → ctxMu 顺序取两把锁的地方，且中途会释放 mu 再做销毁（销毁是 I/O）。
+// Close 是唯一同时取 mu 与 ctxMu 的路径，且会先释放 mu 再做销毁 I/O。
 type Browser struct {
 	port int
 	opts *config.Options
 
 	allocCtx    context.Context
 	allocCancel context.CancelFunc
-	// rootCtx 是常驻的浏览器上下文：所有标签页上下文都作为它的子上下文派生，
-	// 以共享同一个 browser 连接（chromedp 要求如此，否则新建标签页会失败）。
-	// rootTargetID 是 rootCtx 自身占用的锚点 target——chromedp 用 RemoteAllocator 建连时
-	// 会自动 CreateTarget 一个 about:blank 空白页（见 chromedp newTarget 的 !first 分支）。
-	// 它只用于建连与读取默认浏览器上下文 ID，不纳入标签页管理，并在第一个真实标签页
-	// 就绪后由 closeAnchorOnce 关闭，免得窗口里留下一个永远空白的标签页。
+	// rootCtx 是常驻浏览器上下文：所有标签页上下文从它派生，以共享同一条 browser 连接
+	// （chromedp 要求，否则新建标签页失败）。
+	// rootTargetID 是 rootCtx 建连时 chromedp 自动创建的 about:blank 锚点 target，
+	// 仅用于建连与读取默认上下文 ID，不纳入标签页管理，第一个真实标签页就绪后由
+	// closeAnchorOnce 关闭。
 	rootCtx      context.Context
 	rootCancel   context.CancelFunc
 	rootTargetID target.ID
-	// anchorOnce 保证锚点空白页只被关闭一次，见 closeAnchorOnce。
+	// anchorOnce 保证锚点空白页只关闭一次。
 	anchorOnce sync.Once
-	// defaultBrowserContextID 是「默认浏览器上下文」的 ID，Connect 时从 rootCtx 的
-	// 锚点 target 上取一次，之后只读（与 rootTargetID 同一套约定）。
-	//
-	// 为什么要存它：CDP 的 Target.getTargets 会给每个 target 带上 browserContextId，
-	// 但**默认上下文的 ID 不一定是空串**——实测 Chrome 会给默认上下文也分配一个 GUID，
-	// 扩展页面、浏览器内部页面与普通页面共用它。于是「只收 BrowserContextID == ""」
-	// 会把所有页面一起滤掉；改成「等于锚点所在上下文」则新旧行为都正确。
+	// defaultBrowserContextID 是默认浏览器上下文的 ID，Connect 时从锚点 target 读取一次，之后只读。
+	// Target.getTargets 给每个 target 带 browserContextId，但默认上下文的 ID 不一定是空串
+	// （Chrome 会给默认上下文分配 GUID），故按「等于锚点所在上下文」过滤，而非「等于空串」。
 	defaultBrowserContextID cdp.BrowserContextID
 	launched                bool
 	chromeCmd               *exec.Cmd           // 启动的 Chrome 进程，Close 时用于杀进程
@@ -62,49 +56,33 @@ type Browser struct {
 	mu   sync.Mutex
 	tabs []*page.Tab
 
-	// targetListMu 串行「一切会拿着 target 快照去改动 b.tabs 的操作」：
-	// NewTab 的「建 target → 比对前后快照定位新 ID → 登记」，以及 Tabs 的
-	// 「取快照 → syncTabs」。
+	// targetListMu 串行所有「基于 target 快照修改 b.tabs」的操作：NewTab（建 target →
+	// 比对前后快照定位新 ID → 登记）与 Tabs（取快照 → syncTabs）。
 	//
-	// 为什么两者必须互斥（这不是性能优化，是正确性要求）：
-	// syncTabs 会把「快照里没有、但 b.tabs 里还在」的标签页当成已关闭，调用它的
-	// cancel —— 而 chromedp 的上下文取消会**真的 CloseTarget**（见 chromedp.go 里
-	// ctx.Done 分支的 target.CloseTarget）。若不互斥，就会出现这样的交错：
+	// 两者必须互斥（正确性要求）：syncTabs 会把「快照里没有、但 b.tabs 里还在」的标签页
+	// cancel 掉，而 chromedp 的上下文取消会真正 CloseTarget。若不互斥，Tabs 可能拿旧快照
+	// 把 NewTab 刚建好的标签页关掉。互斥后 NewTab 释放锁时 target 与 b.tabs 已一致，
+	// Tabs 的快照必然覆盖 b.tabs。
 	//
-	//	Tabs:   取快照（此时新标签页尚未创建，快照里没有 X）
-	//	NewTab: createTarget 建出 X，并把 X 登记进 b.tabs，然后返回
-	//	Tabs:   拿旧快照跑 syncTabs → b.tabs 里的 X 不在快照中 → cancel → 把 X 关掉
-	//
-	// 结果是「一次只读的 Tabs() 会把并发新建的标签页销毁掉」，且此后永远不再出现。
-	// 互斥之后这个交错不可能发生：NewTab 释放锁时 target 与 b.tabs 已经一致，
-	// 因此 Tabs 的快照必然包含 b.tabs 里的每一个 target。
-	//
-	// 代价只是 NewTab 与 Tabs 互相短暂排队（两三次 getTargets + 一次 createTarget，
-	// 毫秒级），换来的是「读操作绝不销毁资源」。b.tabs 自身的读写仍由 mu 保护，
-	// 锁序为 targetListMu → mu。
+	// b.tabs 自身的读写仍由 mu 保护，锁序 targetListMu → mu。
 	targetListMu sync.Mutex
 
-	// connMu 保护连接状态字段，与 mu（保护 tabs）分开，避免连接握手长时间持锁
+	// connMu 保护连接状态字段，与 mu 分开，避免握手长时间持锁。
 	connMu    sync.Mutex
 	connected bool
 
-	// ctxMu 保护 contexts（命名隔离上下文注册表），与 mu 分开以降低锁竞争
+	// ctxMu 保护 contexts（命名隔离上下文注册表），与 mu 分开以降低锁竞争。
 	ctxMu    sync.Mutex
 	contexts map[string]*BrowserContext
 }
 
-// ensureConnected 校验浏览器处于可用状态。
+// ensureConnected 校验浏览器处于可用状态，供 NewTab / Context 等入口统一拦截「未 Connect 就使用」。
 //
-// 单独抽出是为了在 NewTab / Context 等入口统一拦截「未 Connect 就使用」：
-// 否则 b.rootCtx 为 nil，chromedp.NewContext(nil) 会直接 panic，报错完全不可读。
+// 判据是 connMu 下的 connected 标志，且要求 rootCtx / rootCancel 都在位。不能只判
+// rootCtx != nil：initRootContext 先赋值 rootCtx 再 Run，Run 失败时清理分支只置空
+// rootCancel、留下非 nil 的 rootCtx，会让后续操作作用在已死的上下文上。
 //
-// 判据是 connMu 下的 connected 标志，并且要求 rootCtx / rootCancel 都在位。
-// 早期实现只判 `rootCtx != nil`：initRootContext 先赋值 rootCtx 再 Run，
-// 而 Run 失败时 Connect 的清理分支只把 rootCancel 置空、留下非 nil 的 rootCtx，
-// 于是这里会放行，后续所有操作都作用在一个已死的上下文上，
-// 报出一堆含糊的 context canceled / invalid context。
-//
-// 调用方需持有 b.mu（读 b.closed）——锁序见类型注释。
+// 调用方需持有 b.mu（读 b.closed）。
 func (b *Browser) ensureConnected() error {
 	b.connMu.Lock()
 	connected := b.connected
@@ -119,8 +97,7 @@ func (b *Browser) ensureConnected() error {
 	return nil
 }
 
-// NewBrowser 创建 Browser
-// port 传 0 表示随机端口，传具体值表示固定端口
+// NewBrowser 创建 Browser。port 传 0 为随机端口，否则为固定端口。
 func NewBrowser(port int, opts ...config.Option) *Browser {
 	o := config.Defaults()
 	for _, opt := range opts {
@@ -135,9 +112,8 @@ func NewBrowser(port int, opts ...config.Option) *Browser {
 		}
 	}
 
-	// 用户数据目录：未显式指定时，按端口生成默认路径（需在端口确定之后）。
-	// 必须转为绝对路径：相对路径会让 Chrome handoff 到已存在的浏览器会话，
-	// 从而不新开实例，请求的调试端口也就永远无法就绪。
+	// 用户数据目录：未显式指定时按端口生成默认路径（须在端口确定之后）。
+	// 必须转为绝对路径：相对路径会让 Chrome handoff 到已有会话而不新开实例，调试端口永远无法就绪。
 	if o.UserDataDir == "" {
 		o.UserDataDir = chrome.DefaultUserDataDir(port)
 	} else if abs, err := filepath.Abs(o.UserDataDir); err == nil {
@@ -151,20 +127,17 @@ func NewBrowser(port int, opts ...config.Option) *Browser {
 	}
 }
 
-// removeContext 从命名上下文注册表中移除指定名字的隔离上下文。
-// 仅持有 ctxMu，不触碰 mu，避免与 Browser.Close 产生锁顺序环。
+// removeContext 从命名上下文注册表移除指定上下文。仅持 ctxMu，不触碰 mu，避免与 Close 成锁序环。
 func (b *Browser) removeContext(name string) {
 	b.ctxMu.Lock()
 	defer b.ctxMu.Unlock()
 	delete(b.contexts, name)
 }
 
-// connectedRootCtx 取一次「已连接的常驻上下文」快照，并把 rootCtx 一起带出来。
+// connectedRootCtx 在锁内取「已连接的常驻上下文」快照并返回 rootCtx。
 //
-// 与 guard 的差别就在这个 rootCtx：调用方紧接着要拿它去 chromedp.NewContext 派生
-// 子上下文，而并发的 Close 会把 rootCtx 置 nil——chromedp.NewContext(nil) 内部
-// 会 context.WithCancel(nil) 并直接 panic。所以快照必须在锁内取，且与派生紧挨着，
-// 否则 guard 通过之后 Close 仍可能插进来。
+// 必须在锁内取且与后续派生紧挨着：并发的 Close 会把 rootCtx 置 nil，
+// 而 chromedp.NewContext(nil) 会 panic。
 func (b *Browser) connectedRootCtx() (context.Context, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -174,17 +147,15 @@ func (b *Browser) connectedRootCtx() (context.Context, error) {
 	return b.rootCtx, nil
 }
 
-// boundedRootCtx 基于常驻 rootCtx 派生一个运行上下文：既携带 browser 级 CDP 路由信息，
-// 又受调用方 ctx 的取消与超时约束。browser 级命令必须在 rootCtx 分支上执行（依赖
-// FromContext(c).Browser 路由），但直接用无超时的 rootCtx 会在 Chrome 卡死时永久阻塞。
+// boundedRootCtx 基于常驻 rootCtx 派生运行上下文：既携带 browser 级 CDP 路由，
+// 又受调用方 ctx 的取消与超时约束。browser 级命令必须走 rootCtx 分支，但无超时的
+// rootCtx 会在 Chrome 卡死时永久阻塞。
 //
-// 规则：调用方 ctx 带 deadline 时取 min(cdpkit.DefaultCallTimeout, 剩余时间)；否则套用默认超时；
-// 调用方 ctx 被取消时同步取消。返回的 cancel 必须由调用方 defer 调用。
-// 取消 runCtx 只结束本次调用，不影响 rootCtx 上的 browser 长连接
-// （该连接的生命周期绑定在 initRootContext 首次 Run 的 rootCtx 上）。
+// 规则：调用方 ctx 带 deadline 时取 min(cdpkit.DefaultCallTimeout, 剩余时间)，否则套用默认超时；
+// 调用方 ctx 取消时同步取消。返回的 cancel 须由调用方 defer。取消 runCtx 只结束本次调用，
+// 不影响 rootCtx 上的长连接。
 //
-// 与 Close 并发（rootCtx 已被置 nil）时返回一个立即结束的上下文：后续 chromedp.Run
-// 会以错误返回，而不是对 nil 调 context.WithTimeout 直接 panic。
+// rootCtx 已被 Close 置 nil 时返回一个立即结束的上下文，使后续 Run 以错误返回而非 panic。
 func (b *Browser) boundedRootCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	parent := b.rootCtx
 	if parent == nil {
@@ -193,8 +164,8 @@ func (b *Browser) boundedRootCtx(ctx context.Context) (context.Context, context.
 		return dead, cdpkit.NoopCancel
 	}
 	runCtx, cancel := context.WithTimeout(parent, cdpkit.BudgetDuration(ctx))
-	// runCtx 的父是 rootCtx 而不是 ctx，调用方对 ctx 的取消传导不过来，得自己接上。
-	// AfterFunc 正好做这件事，且 stop() 能立刻解除注册——比常驻一个 select goroutine 干净。
+	// runCtx 的父是 rootCtx 而非 ctx，调用方对 ctx 的取消传导不过来，用 AfterFunc 接上；
+	// stop() 能立刻解除注册，比常驻 select goroutine 干净。
 	stop := context.AfterFunc(ctx, cancel)
 	return runCtx, func() {
 		stop()
@@ -202,38 +173,29 @@ func (b *Browser) boundedRootCtx(ctx context.Context) (context.Context, context.
 	}
 }
 
-// tabInitBudget 返回「建立标签页会话」（新建 / 附着 target）这一步的等待预算：
-// min(调用方剩余时间, cdpkit.DefaultCallTimeout)。与 boundedRootCtx 共用同一条超时策略
-// （算法见 cdpkit.BudgetDuration）。
+// tabInitBudget 返回「建立标签页会话」（新建 / attach target）的等待预算：
+// min(调用方剩余时间, cdpkit.DefaultCallTimeout)，与 boundedRootCtx 共用超时策略。
 //
-// 它只能当 cdpkit.RunAbandonable 的 watchCtx 用，**绝不能**直接拿去做 chromedp.Run：
-// chromedp 会在 attach 时把 Target 的事件分发 goroutine 绑到传入的 ctx 上
-// （见 chromedp.Context.attachTarget 里的 `go c.Target.run(ctx)`）。那个 ctx 若是
-// 一个会被取消 / 超时的子上下文，标签页之后所有命令都会永远等不到应答——
-// 表现为「标签页建出来了、句柄也拿到了，但每个操作都卡到自己的超时」。
-// 这一点已用真实 Chrome 复现过：给 attach 套 30s 超时子上下文后，导航直接卡满 30s。
-//
-// 正确做法是把 Run 留在长生命周期的 tabCtx 上，只让调用方按这个预算决定
-// 「放弃等待」——Chrome 无响应时调用方不会被永久挂住（历史缺陷 BUG-07），
-// 标签页本身也不受影响。
+// 它只能作 cdpkit.RunAbandonable 的 watchCtx，绝不能直接用于 chromedp.Run：
+// chromedp 在 attach 时会把 Target 事件分发 goroutine 绑到传入的 ctx，若该 ctx 会被
+// 取消 / 超时，标签页之后所有命令都等不到应答（表现为句柄已拿到但每个操作都卡到超时）。
+// 正确做法是把 Run 留在长生命周期的 tabCtx 上，只让调用方按预算决定「放弃等待」，
+// Chrome 无响应时调用方不会被永久挂住（BUG-07）。
 func tabInitBudget(ctx context.Context) (context.Context, context.CancelFunc) {
-	// 挂到调用方 ctx 上而不是 rootCtx 上：这个预算只用来决定「何时放弃等待」，
-	// 不参与 CDP 路由，所以父上下文取调用方的最直观。
+	// 挂到调用方 ctx 而非 rootCtx：该预算只决定「何时放弃等待」，不参与 CDP 路由。
 	return context.WithTimeout(ctx, cdpkit.BudgetDuration(ctx))
 }
 
-// newTabCtx 从常驻 rootCtx 派生一个标签页上下文并完成首次 Run（新建 target 或 attach 已有 target）。
+// newTabCtx 从常驻 rootCtx 派生标签页上下文并完成首次 Run（新建或 attach target）。
 //
-// 这套流程在三个入口重复：Browser.NewTab、BrowserContext.NewTab、attachTarget，
-// 三处都要求「从 rootCtx 派生 → 首次 Run → 超时只加在等待预算上」。
-// 最后一条是 BUG-07 的教训：Run 必须留在长生命周期的 tabCtx 上，只让调用方按
-// tabInitBudget 决定「放弃等待」，绝不能把超时子上下文直接喂给 chromedp.Run
-// （那会掐断 target 的事件分发 goroutine）。集中在这里，就不会再有人写错第二遍。
+// Browser.NewTab、BrowserContext.NewTab、attachTarget 三个入口共用此流程。Run 必须留在
+// 长生命周期的 tabCtx 上，超时只加在等待预算（tabInitBudget）上，绝不能把超时子上下文
+// 直接喂给 chromedp.Run（会掐断 target 事件分发 goroutine，见 BUG-07）。
 //
-// opts 用于 attach 已有 target（chromedp.WithTargetID）；新建标签页时不传。
-// 失败时内部已 cancel 派生的子上下文，调用方无需再清理。
+// opts 用于 attach 已有 target（chromedp.WithTargetID），新建时不传。
+// 失败时内部已 cancel 派生的子上下文，调用方无需清理。
 func (b *Browser) newTabCtx(ctx context.Context, opts ...chromedp.ContextOption) (context.Context, context.CancelFunc, error) {
-	// 在锁内取 rootCtx 快照：并发 Close 会把它置 nil，chromedp.NewContext(nil) 会 panic
+	// 锁内取 rootCtx 快照：并发 Close 会置 nil，chromedp.NewContext(nil) 会 panic
 	rootCtx, err := b.connectedRootCtx()
 	if err != nil {
 		return nil, nil, err
@@ -250,13 +212,12 @@ func (b *Browser) newTabCtx(ctx context.Context, opts ...chromedp.ContextOption)
 	return tabCtx, cancel, nil
 }
 
-// Port 返回当前 Browser 使用的调试端口
+// Port 返回当前调试端口。
 func (b *Browser) Port() int {
 	return b.port
 }
 
 // PID 返回本实例启动的 Chrome 主进程 PID；接管已有 Chrome 时返回 0。
-// 可与 Tab.WindowID 配合证明「多个窗口同属一个浏览器进程」。
 func (b *Browser) PID() int {
 	if b.chromeCmd == nil || b.chromeCmd.Process == nil {
 		return 0
@@ -264,18 +225,16 @@ func (b *Browser) PID() int {
 	return b.chromeCmd.Process.Pid
 }
 
-// Connect 探测端口：活着就连，空闲就启动。
+// Connect 探测端口：存活则连接，空闲则启动 Chrome。
 //
-// ctx 控制整个握手阶段（端口探测 / 启动 Chrome / 首次连接），取消或到期即中止。
-// ctx 未设置 deadline 时，退回 opts.ConnectTimeout（默认 10s）作为握手超时。
+// ctx 控制整个握手阶段（探测 / 启动 / 首次连接），取消或到期即中止；未设 deadline 时
+// 退回 opts.ConnectTimeout（默认 10s）。
 //
-// 注意：握手结束后，长连接会绑定到内部 background ctx 而非调用方 ctx——
-// 连接的生命周期应当跟随 Browser 由 Close() 回收，若绑在调用方的一次性 ctx 上，
-// ctx 一到期浏览器连接就被切断，后续所有操作都会报 context canceled。
+// 握手结束后长连接绑定到内部 background ctx 而非调用方 ctx：连接生命周期应随 Browser
+// 由 Close 回收，绑在一次性 ctx 上会导致 ctx 到期后所有操作报 context canceled。
 func (b *Browser) Connect(ctx context.Context) error {
 	b.connMu.Lock()
-	// connHeld 记录 connMu 是否还握在手里：失败回滚必须先交还它、再按全局锁序去拿 mu，
-	// 交还之后这里就不能再重复解锁（原因见下面失败分支的说明）。
+	// connHeld 标记 connMu 是否仍持有：失败回滚须先释放它再按锁序取 mu，释放后不得重复解锁。
 	connHeld := true
 	defer func() {
 		if connHeld {
@@ -284,14 +243,14 @@ func (b *Browser) Connect(ctx context.Context) error {
 	}()
 
 	if b.connected {
-		// 重复连接会覆盖并泄漏上一条 allocator 与浏览器连接，显式拒绝而非静默覆盖
+		// 重复连接会覆盖并泄漏上一条 allocator 与连接，显式拒绝
 		return errs.ErrAlreadyConnected
 	}
 	if b.closed {
 		return errs.ErrClosed
 	}
 
-	// 握手超时：ctx 自带 deadline 时完全听调用方的；否则套用 connectTimeout
+	// 握手超时：ctx 自带 deadline 时以调用方为准，否则套用 connectTimeout
 	handshakeCtx := ctx
 	if _, ok := ctx.Deadline(); !ok {
 		timeout := b.opts.ConnectTimeout
@@ -306,16 +265,15 @@ func (b *Browser) Connect(ctx context.Context) error {
 	if chrome.IsPortAlive(handshakeCtx, b.port) {
 		b.opts.Logger.Info("检测到已有 Chrome，直接连接", "port", b.port)
 		b.launched = false
-		// 关键一步：核实端口上那个 Chrome 确实是我们期望的档案。
-		// 少了这步，显式指定的 WithUserDataDir 会被静默忽略——你以为在用档案 A，
-		// 实际接管了别人的浏览器（别的登录态），多账号隔离无声失效。
+		// 核实端口上的 Chrome 确实是期望的档案：否则显式指定的 WithUserDataDir 会被静默忽略，
+		// 接管到别人的浏览器（别的登录态），多账号隔离失效。
 		if err := chrome.VerifyPortOwner(b.opts, b.port); err != nil {
 			return err
 		}
 	} else {
 		b.opts.Logger.Info("未检测到 Chrome，正在启动", "port", b.port)
-		// 先拿数据目录的 OS 级排他锁：两个实例并发用同一目录启动 Chrome 时，
-		// 后启动者会弹「无法对其数据目录执行读写操作」对话框，这里提前转为明确的 Go 错误。
+		// 先取数据目录的 OS 级排他锁：两实例并发用同一目录启动时，后启动者会弹
+		// 「无法读写数据目录」对话框，这里提前转为明确的 Go 错误。
 		lock, err := chrome.AcquireProfileLock(b.opts.UserDataDir)
 		if err != nil {
 			return err
@@ -328,8 +286,7 @@ func (b *Browser) Connect(ctx context.Context) error {
 		b.lock = lock
 		b.launched = true
 		b.chromeCmd = cmd
-		// 留下档案标记，供下次接管时核实「端口上的浏览器属于哪个目录」。
-		// 写入失败不阻断启动，只记日志（最坏结果是下次接管走「无法证实」分支）。
+		// 写档案标记，供下次接管核实端口浏览器属于哪个目录。写入失败不阻断启动，仅记日志。
 		if err := chrome.WriteProfileMarker(b.opts.UserDataDir, b.port, b.PID()); err != nil {
 			b.opts.Logger.Warn("写入档案标记失败，下次接管将无法核实用户数据目录",
 				"dir", b.opts.UserDataDir, "err", err)
@@ -342,16 +299,12 @@ func (b *Browser) Connect(ctx context.Context) error {
 	)
 
 	if err := b.initRootContext(handshakeCtx); err != nil {
-		// 连接没建成：就地回收本次 Connect 已申请的全部资源，不依赖调用方随后一定调 Close()。
-		// 否则直接 NewBrowser+Connect 的调用方在失败后若不 Close，会泄漏一个僵尸 Chrome 进程，
-		// 且数据目录排他锁一直被占，导致下次启动报「无法读写数据目录」。
-		// 回收内容与顺序见 releaseConnectionResources（与 Close 的第 3 步共用同一份实现）。
+		// 连接未建成：就地回收本次 Connect 申请的全部资源，不依赖调用方随后调 Close。
+		// 否则会泄漏僵尸 Chrome 进程，且数据目录锁一直被占，导致下次启动失败。
 		//
-		// 锁序：本方法一进来就握着 connMu，而 releaseConnectionResources 要求持着 mu。
-		// 若直接在持 connMu 的状态下补一次 b.mu.Lock()，就变成了「持 connMu 等 mu」，
-		// 与本仓库全局锁序 **mu → connMu → ctxMu** 相反；而 Close 恰好是在 mu 临界区里
-		// 去拿 connMu 的（Close 第 0 步置 connected=false），两者相遇即 ABBA 死锁。
-		// 所以这里先把 connMu 交还，再按正常顺序拿 mu 回收——不是「局部例外」，而是守序。
+		// 锁序：本方法进来即持 connMu，而 releaseConnectionResources 要求持 mu。
+		// 全局锁序是 mu → connMu → ctxMu，Close 又在 mu 临界区内取 connMu，
+		// 故此处必须先释放 connMu 再取 mu，否则 ABBA 死锁。
 		b.connMu.Unlock()
 		connHeld = false
 
@@ -365,23 +318,18 @@ func (b *Browser) Connect(ctx context.Context) error {
 	return nil
 }
 
-// initRootContext 建立常驻的浏览器上下文 rootCtx，并借此确认 Chrome 真的可连。
+// initRootContext 建立常驻浏览器上下文 rootCtx，并借此确认 Chrome 可连。
 //
-// chromedp 中，只有从「已分配 browser 连接的上下文」派生的子上下文，才会共享该连接并通过
-// Target.createTarget 新建标签页；若直接从 allocator(allocCtx) 派生，每个上下文都会各自新建
-// 一条 browser 连接，在已有连接存在时 createTarget 可能失败（no browser is open）。
-// 因此这里先建立并 Run 一个 rootCtx 作为所有标签页上下文的父级。rootCtx 自身会占用一个空白
-// target 作为锚点（rootTargetID），不纳入标签页管理；它会在第一个真实标签页就绪后由
-// closeAnchorOnce 关闭（若始终没有真实标签页，则最迟在 Browser.Close 时随 rootCancel 释放）。
+// chromedp 中只有从「已分配 browser 连接的上下文」派生的子上下文才共享该连接并能
+// createTarget 新建标签页；直接从 allocator 派生会各自新建连接，导致 createTarget 失败。
+// 因此先建立并 Run 一个 rootCtx 作为所有标签页上下文的父级。rootCtx 自身占用一个空白
+// 锚点 target（rootTargetID），不纳入标签页管理，第一个真实标签页就绪后由 closeAnchorOnce 关闭。
 //
-// ctx 用于给首次 Run 兜底超时，但不会被用作连接的生命周期 ctx（见 cdpkit.RunAbandonable）。
+// ctx 仅用于首次 Run 的兜底超时，不作为连接的生命周期 ctx（见 cdpkit.RunAbandonable）。
 func (b *Browser) initRootContext(ctx context.Context) error {
 	b.rootCtx, b.rootCancel = chromedp.NewContext(b.allocCtx)
 
-	// 首次 Run 必须直接作用于 b.rootCtx，不能包一层「可取消的超时子 ctx」：
-	// RemoteAllocator 会把浏览器连接的生命周期绑定到首次 Run 传入的 ctx，
-	// 一旦该 ctx 被取消，连接随之关闭，rootCtx 立即失效（后续操作报 context canceled）。
-	// 所以用 cdpkit.RunAbandonable：超时只是「放弃等待」，不去取消 rootCtx。
+	// 首次 Run 不能包超时子 ctx：RemoteAllocator 把连接生命周期绑在首次 Run 的 ctx 上，取消即断连。
 	err := cdpkit.RunAbandonable(ctx, b.rootCtx, func(runCtx context.Context) error {
 		return chromedp.Run(runCtx, chromedp.ActionFunc(func(context.Context) error {
 			return nil
@@ -402,9 +350,8 @@ func (b *Browser) initRootContext(ctx context.Context) error {
 	})
 	if info != nil {
 		b.rootTargetID = info.TargetID
-		// 锚点 target 就落在默认上下文里，它的 browserContextId 即默认上下文的 ID。
-		// 这一步失败（info == nil）会让 listTargets 无法排除浏览器自身的锚点页面，
-		// 因此单独告警，便于定位。
+		// 锚点 target 落在默认上下文，其 browserContextId 即默认上下文 ID。
+		// 读取失败会使 listTargets 无法排除锚点页，故单独告警。
 		b.defaultBrowserContextID = info.BrowserContextID
 	} else {
 		b.opts.Logger.Warn("未能读取锚点 target 信息，标签页列表可能包含锚点空白页")
@@ -412,18 +359,15 @@ func (b *Browser) initRootContext(ctx context.Context) error {
 	return nil
 }
 
-// closeAnchorOnce 关闭 rootCtx 建立 browser 连接时 chromedp 自动创建的那个 about:blank
-// 锚点标签页（rootTargetID）。它只用于建连与读取默认浏览器上下文 ID，不承载任何业务，
-// 却会在窗口里留下一个永远空白的标签页。
+// closeAnchorOnce 关闭 chromedp 建连时自动创建的 about:blank 锚点标签页（rootTargetID）。
+// 它不承载业务，却会在窗口留下一个永久空白页。
 //
-// 关闭它是安全的：browser 连接的生命周期绑定在 rootCtx 上而非这个 target，库内所有
-// browser 级 CDP 调用都走 Browser executor（不依赖锚点的 Target executor），子标签页
-// 各自新建 target。必须走 Browser executor 下发 CloseTarget：若用默认的 Target executor，
-// chromedp 会直接拒绝（"to close the target, cancel its context"）。
+// 关闭是安全的：连接生命周期绑在 rootCtx 而非该 target，browser 级 CDP 调用走 Browser
+// executor，子标签页各自新建 target。CloseTarget 必须走 Browser executor，用默认 Target
+// executor 会被 chromedp 拒绝。
 //
-// 必须用 sync.Once 且**在已经存在一个真实标签页之后**才调用（NewTab / attachTarget
-// 成功登记后）：若锚点是浏览器里最后一个 target，关掉它会让非 headless 的 Chrome
-// 直接退出，连接随之断开。
+// 必须用 sync.Once 且在已存在真实标签页之后调用：若锚点是最后一个 target，关掉它会让
+// 非 headless 的 Chrome 退出。
 func (b *Browser) closeAnchorOnce(ctx context.Context) {
 	b.anchorOnce.Do(func() {
 		id := b.rootTargetID
@@ -441,8 +385,7 @@ func (b *Browser) closeAnchorOnce(ctx context.Context) {
 	})
 }
 
-// guard 取一次「连接可用」的快照，供随后在锁外做 I/O 的方法使用。
-// 需要持 b.mu 读 closed，锁序见类型注释。
+// guard 取一次「连接可用」快照，供随后在锁外做 I/O 的方法使用。需持 b.mu 读 closed。
 func (b *Browser) guard() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -451,12 +394,9 @@ func (b *Browser) guard() error {
 
 // Tabs 返回当前浏览器里所有 page 类型的标签页。
 //
-// 会在锁外查询 target 列表并附着新出现的标签页，避免端口卡顿时把
-// 所有标签页操作一起串行卡住（见 syncTabs 的说明）。
-//
-// 「取快照 + 同步」整体与 NewTab 互斥（targetListMu）：syncTabs 会把不在快照里的
-// 标签页 cancel 掉，而 cancel 等于 CloseTarget；不互斥的话，一次 Tabs() 就可能
-// 把并发新建的标签页真的关掉。详见 targetListMu 字段的注释。
+// 在锁外查询 target 列表并附着新标签页，避免端口卡顿时串行阻塞所有标签页操作。
+// 「取快照 + 同步」整体与 NewTab 互斥（targetListMu），否则一次 Tabs() 可能把并发
+// 新建的标签页 cancel 掉（详见 targetListMu 字段注释）。
 func (b *Browser) Tabs(ctx context.Context) ([]*page.Tab, error) {
 	if err := b.guard(); err != nil {
 		return nil, err
@@ -472,14 +412,12 @@ func (b *Browser) Tabs(ctx context.Context) ([]*page.Tab, error) {
 	return b.syncTabs(ctx, infos)
 }
 
-// NewTab 新建一个标签页并托管
+// NewTab 新建并托管一个标签页。
 //
-// 全程在锁外做 I/O（HTTP 查询 + CDP 往返），只在最后登记标签页时短暂持锁；
-// 但「新建 target → 比对前后 target 列表定位新 ID → 登记进 b.tabs」整段必须与
-// Tabs()（取快照 + syncTabs）互斥，否则两个并发的 NewTab 会互相把对方的新 target
-// 认成自己的，而且 Tabs() 还会拿旧快照把刚建好的 target 当成已关闭取消掉
-// （cancel == CloseTarget）。因此用 targetListMu 保护——它不保护 b.tabs 的状态
-// （那是 mu 的职责），所以不会和 GetTab 之类只读 b.tabs 的路径争锁。
+// I/O 全程在锁外，仅登记时短暂持锁。「新建 target → 比对前后列表定位新 ID → 登记」整段
+// 须与 Tabs()（取快照 + syncTabs）互斥（targetListMu），否则并发 NewTab 会互相认错 target，
+// Tabs() 还会用旧快照把刚建好的 target 当作已关闭取消。targetListMu 不保护 b.tabs 状态
+// （那是 mu 的职责），故不与只读 b.tabs 的路径争锁。
 func (b *Browser) NewTab(ctx context.Context) (*page.Tab, error) {
 	b.targetListMu.Lock()
 	defer b.targetListMu.Unlock()
@@ -489,8 +427,8 @@ func (b *Browser) NewTab(ctx context.Context) (*page.Tab, error) {
 		return nil, err
 	}
 
-	// 从常驻 rootCtx 派生子上下文：子上下文共享 browser 连接，Run 时通过 createTarget
-	// 新建标签页。首次 Run 与超时预算的细节见 newTabCtx（BUG-07 的教训）。
+	// 从常驻 rootCtx 派生子上下文：共享 browser 连接，Run 时 createTarget 新建标签页。
+	// 首次 Run 与超时预算见 newTabCtx（BUG-07）。
 	tabCtx, cancel, err := b.newTabCtx(ctx)
 	if err != nil {
 		return nil, err
@@ -515,10 +453,10 @@ func (b *Browser) NewTab(ctx context.Context) (*page.Tab, error) {
 	b.tabs = append(b.tabs, tab)
 	b.mu.Unlock()
 
-	// 已有一个真实标签页落地，可以安全关闭 rootCtx 建连时 chromedp 自动创建的锚点空白页。
+	// 已有真实标签页落地，可安全关闭建连时的锚点空白页
 	b.closeAnchorOnce(ctx)
 
-	// 反检测脚本只对新建的标签页注入；失败不影响使用，仅记录告警
+	// 反检测脚本只对新建标签页注入；失败不影响使用，仅告警
 	if err := page.InjectAntiDetect(tabCtx, tab, b.opts); err != nil {
 		b.opts.Logger.Warn("注入反检测脚本失败", "tab", newID, "err", err)
 	}
@@ -569,15 +507,13 @@ func (b *Browser) CloseTab(ctx context.Context, tab *page.Tab) {
 		return
 	}
 
-	// 先在锁外真正关闭 Chrome 里的 target（CDP 往返不持锁）
-	//
-	// 调用方传裸 context 时回退到 rootCtx，避免 chromedp.Run 另起临时浏览器
+	// 先在锁外关闭 Chrome 里的 target（CDP 往返不持锁）。
+	// 调用方传裸 context 时回退到 rootCtx，避免 chromedp.Run 另起临时浏览器。
 	runCtx := ctx
 	if chromedp.FromContext(ctx) == nil {
 		runCtx = b.rootCtx
 	}
-	// 同样套一层默认超时：Chrome 无响应时 CloseTab 不该把调用方永久挂住
-	// （与库内其它 browser 级调用的做法一致，见 BUG-07 一节的说明）。
+	// 同样套默认超时：Chrome 无响应时 CloseTab 不该把调用方永久挂住（见 BUG-07）。
 	runCtx, cancelRun := cdpkit.WithDefaultTimeout(runCtx, cdpkit.DefaultCallTimeout)
 	defer cancelRun()
 	_ = chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -595,50 +531,44 @@ func (b *Browser) CloseTab(ctx context.Context, tab *page.Tab) {
 	}
 }
 
-// releaseConnectionResources 释放「一次连接」占用的全部资源，顺序是刻意安排的：
-// rootCtx（顺带关掉它的锚点空白标签页）→ allocator → Chrome 进程树 → 数据目录排他锁。
+// releaseConnectionResources 释放一次连接占用的全部资源，顺序固定：
+// rootCtx（含其锚点空白页）→ allocator → Chrome 进程树 → 数据目录排他锁。
 //
-// 调用方**必须持有 b.mu**：本方法读写 rootCtx / rootCancel / allocCtx / allocCancel /
-// launched / chromeCmd / lock，这些字段都受 mu 保护。
+// 调用方必须持有 b.mu（本方法读写 rootCtx / allocCtx / launched / chromeCmd / lock 等受 mu 保护的字段）。
+// 两个调用点共用：Connect 失败回滚与 Close 第 3 步。
 //
-// 两个调用点共用它：
-//   - Connect 的失败回滚（连接没建成时不能把回收责任推给调用方）；
-//   - Close 的第 3 步。
-//
-// 幂等：每个句柄都是「判空 → 用 → 置 nil」，重复调用不会 panic，
-// 也不会重复 kill 进程树或重复释放目录锁——teardown 路径天然会被重复触发
-// （Close 之后又走一次失败回滚、Close 与回滚并发等），这是它必须成立的性质。
+// 幂等：每个句柄「判空 → 用 → 置 nil」，重复调用不 panic，也不会重复 kill 或重复释放锁
+// （teardown 路径天然会被重复触发）。
 func (b *Browser) releaseConnectionResources() {
 	if b.rootCancel != nil {
 		b.rootCancel()
 		b.rootCancel = nil
 	}
-	// rootCtx 也必须一起置 nil：只清 rootCancel 会留下「rootCtx 非 nil 但连接已死」
-	// 的中间态，让 ensureConnected 误判为已连接（见该方法注释）。
+	// rootCtx 也须置 nil：只清 rootCancel 会留下「rootCtx 非 nil 但连接已死」的中间态，
+	// 使 ensureConnected 误判为已连接。
 	b.rootCtx = nil
 	if b.allocCancel != nil {
 		b.allocCancel()
 		b.allocCancel = nil
 	}
-	// 如果是自己启动的 Chrome，杀掉整棵进程树（含 renderer/gpu/crashpad 等子进程），
-	// 否则残留子进程会继续占用 user-data-dir 文件锁，导致下次启动报「无法读写数据目录」。
+	// 自己启动的 Chrome 须杀整棵进程树（含 renderer/gpu/crashpad 等子进程），
+	// 否则残留子进程继续占用 user-data-dir 文件锁，导致下次启动失败。
 	if b.launched {
 		chrome.KillProcessTree(b.chromeCmd)
 		b.launched = false
 	}
 	b.chromeCmd = nil
-	// 进程树杀完后再释放数据目录排他锁，让等待方能立刻接管
+	// 进程树杀完后再释放数据目录锁，让等待方立刻接管
 	if b.lock != nil {
 		b.lock.Release()
 		b.lock = nil
 	}
 }
 
-// Close 断开连接并释放资源。默认不关标签页。
-// 属于 teardown 操作，遵循 io.Closer 惯例不接受 ctx。
+// Close 断开连接并释放资源，默认不关标签页。属 teardown，遵循 io.Closer 惯例不接受 ctx。
 //
-// 释放顺序是刻意安排的：隔离上下文要靠 CDP 的 disposeBrowserContext 销毁，
-// 必须在 rootCtx 仍然存活时执行，因此排在 rootCancel 之前。
+// 释放顺序固定：隔离上下文靠 CDP disposeBrowserContext 销毁，须在 rootCtx 存活时执行，
+// 故排在 rootCancel 之前。
 func (b *Browser) Close() {
 	b.mu.Lock()
 	if b.closed {
@@ -646,13 +576,12 @@ func (b *Browser) Close() {
 		return
 	}
 	b.closed = true
-	// 同步把连接标志置回未连接：ensureConnected 先看 closed，
-	// 但它随后还会检查 rootCtx/rootCancel，两个状态保持一致才不会有中间态
+	// 同步置回未连接标志：ensureConnected 先看 closed，随后还查 rootCtx/rootCancel，须保持一致
 	b.connMu.Lock()
 	b.connected = false
 	b.connMu.Unlock()
 
-	// 1) 取出隔离上下文快照并清空注册表，随后在锁外逐个销毁（销毁是 I/O，不宜持锁）
+	// 1) 取隔离上下文快照并清空注册表，随后在锁外逐个销毁（销毁是 I/O）
 	b.ctxMu.Lock()
 	ctxs := make([]*BrowserContext, 0, len(b.contexts))
 	for _, bc := range b.contexts {
@@ -676,23 +605,20 @@ func (b *Browser) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// 3) 释放常驻 rootCtx（会关闭其锚点空白标签页）、allocator、Chrome 进程树与数据目录锁。
-	//    与 Connect 的失败回滚共用同一份实现，免得「一处补了释放、另一处漏了」。
+	// 3) 释放常驻 rootCtx（含其锚点空白页）、allocator、Chrome 进程树与数据目录锁，与 Connect 失败回滚共用实现
 	b.releaseConnectionResources()
 }
 
-// OpenPage 创建并连接浏览器，返回一个可用标签页
-// port 传 0 表示随机端口，传具体值表示固定端口
-// 无论是新启动还是接管已有 Chrome，都优先复用最近打开的标签页，没有则新建一个
+// OpenPage 创建并连接浏览器，返回一个可用标签页。port 传 0 为随机端口，否则固定。
+// 无论新启动还是接管，都优先复用最近打开的标签页，没有则新建。
 func OpenPage(ctx context.Context, port int, opts ...config.Option) (*Browser, *page.Tab, error) {
 	b := NewBrowser(port, opts...)
 	if err := b.Connect(ctx); err != nil {
-		b.Close() // 连接失败也要清理：若已启动 Chrome 则结束进程，避免汄漏僵尸实例
+		b.Close() // 连接失败也要清理：结束已启动的 Chrome，避免泄漏僵尸实例
 		return nil, nil, err
 	}
 
-	// 优先获取最新（最后打开）的标签页；若当前没有任何标签页
-	// （启动瞬间 target 未就绪、或已有浏览器标签全被关掉），则新建一个。
+	// 优先取最新标签页；若当前没有任何标签页（启动瞬间未就绪、或标签全被关），则新建
 	tab, err := b.LatestTab(ctx)
 	if err != nil {
 		tab, err = b.NewTab(ctx)
@@ -702,14 +628,12 @@ func OpenPage(ctx context.Context, port int, opts ...config.Option) (*Browser, *
 		}
 	}
 
-	// 仅对新启动的 Chrome 清理多余标签页（如初始空白页）；
-	// 接管已有 Chrome 时绝不能关闭用户自己开的其他标签页。
+	// 仅对新启动的 Chrome 清理多余标签页；接管已有 Chrome 时绝不能关用户自己开的标签页
 	if b.launched {
 		b.closeOtherTabs(ctx, tab)
 	}
 
-	// 复用来的标签页（接管已有 Chrome、或新启动时的初始空白页）没有经过 NewTab，
-	// 这里补一次注入；ensureAntiDetect 幂等，NewTab 已注入过的不会重复执行。
+	// 复用来的标签页未经 NewTab，这里补注入；ensureAntiDetect 幂等，已注入的不会重复执行
 	if err := page.InjectAntiDetect(tab.Ctx, tab, b.opts); err != nil {
 		b.opts.Logger.Warn("注入反检测脚本失败", "tab", tab.ID, "err", err)
 	}
@@ -717,13 +641,10 @@ func OpenPage(ctx context.Context, port int, opts ...config.Option) (*Browser, *
 	return b, tab, nil
 }
 
-// closeOtherTabs 关闭除 keep 之外所有由本 Browser 托管的标签页。
-// 仅用于新启动 Chrome 后清理多余的初始空白页——接管已有 Chrome 时绝不能调用，
-// 否则会关掉用户自己开的标签页。
+// closeOtherTabs 关闭除 keep 外所有本 Browser 托管的标签页。仅用于新启动 Chrome 后清理
+// 多余初始空白页；接管已有 Chrome 时绝不能调用。
 //
-// 只在锁内挑出 keep 之外的标签页，真正的关闭与「从 b.tabs 摘除」都交给 CloseTab：
-// 那套「CloseTarget + cancel + 从 b.tabs 摘除」已经有一份实现，不在别处重写。
-// 因此这里不再写回 b.tabs——写回是多余的，CloseTab 随即又会逐个摘掉。
+// 只在锁内挑出 keep 之外的标签页，关闭与摘除都交给 CloseTab（已有一份实现），故此处不写回 b.tabs。
 func (b *Browser) closeOtherTabs(ctx context.Context, keep *page.Tab) {
 	if keep == nil {
 		return
@@ -738,7 +659,7 @@ func (b *Browser) closeOtherTabs(ctx context.Context, keep *page.Tab) {
 	}
 	b.mu.Unlock()
 
-	// 在锁外关闭，避免长时间持锁；由 CloseTab 负责 cancel 并从 b.tabs 摘除。
+	// 锁外关闭，避免长时间持锁；由 CloseTab 负责 cancel 并摘除
 	for _, t := range others {
 		b.CloseTab(ctx, t)
 	}

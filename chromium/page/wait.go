@@ -7,7 +7,6 @@ import (
 	"github.com/yymm456/go-drission/chromium/errs"
 )
 
-// waitCond 表示 WaitBuilder 的等待条件类型
 type waitCond int
 
 const (

@@ -51,8 +51,8 @@ func ReleaseTab(t *Tab) {
 //
 // ctx 放第一位：这是**包级函数**不是方法（别名类型不能加方法），
 // 按本库的约定与 revive 的 context-as-argument，自由函数的 ctx 必须在最前。
-// 设计文档 §18.3 写的是 `(t *Tab, ctx, o)`，那是在它还被当成方法的假设下写的，
-// 以可编译、过 lint 的签名为准。
+// 早期设计曾把它当方法写成 `(t *Tab, ctx, o)`，但别名类型不能加方法，
+// 以可编译、过 lint 的包级函数签名为准。
 func InjectAntiDetect(ctx context.Context, t *Tab, o *config.Options) error {
 	return t.ensureAntiDetect(ctx, o)
 }

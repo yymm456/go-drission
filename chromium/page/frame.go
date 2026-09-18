@@ -17,18 +17,15 @@ import (
 
 // Frame 代表页面里的一个 iframe（框架）。
 //
-// 实现方式：先用 Page.getFrameTree 拿到框架树，再用 DOM.getFrameOwner 把框架和
-// <iframe> 元素对上号，最后用 Page.createIsolatedWorld 在该框架里建一个独立的
-// JS 世界，后续所有操作都在这个世界内用 Runtime.evaluate 完成。
+// 实现：先用 Page.getFrameTree 拿框架树，再用 DOM.getFrameOwner 把框架与 <iframe> 元素对上，
+// 最后用 Page.createIsolatedWorld 在该框架建独立 JS 世界，后续操作都在其中用 Runtime.evaluate 完成。
 //
-// 这样即使跨域也能操作（脚本直接跑在目标框架的渲染进程里，不受同源策略限制），
-// 也不需要把 iframe 当成独立 target 去 attach——后者只对跨进程 iframe(OOPIF) 有效，
-// 对同进程 iframe 反而拿不到 target。
+// 这样即使跨域也能操作（脚本跑在目标框架的渲染进程里，不受同源策略限制），也无需把 iframe 当独立
+// target 去 attach——后者只对跨进程 iframe(OOPIF) 有效，对同进程 iframe 反而拿不到 target。
 //
-// 生命周期：Frame 绑定在「某一次页面加载」上。顶层页面重新导航（或 iframe 自身换源）
-// 之后，原来的 frameID 与 isolated world 都会失效；此时本包会按当初的定位依据
-// （选择器 / URL / name）自动重新定位一次，重新定位也失败才返回 ErrFrameDetached。
-// 框架内的元素操作走 FrameElement（由 Frame.Ele* 返回），都是 JS 语义：Click 走 el.click()，不做可见性检查。
+// 生命周期：Frame 绑定在「某一次页面加载」上。顶层页面重新导航（或 iframe 换源）后，原 frameID 与
+// isolated world 都会失效；此时按当初的定位依据（选择器 / URL / name）自动重新定位，仍失败才返回
+// ErrFrameDetached。框架内元素操作走 FrameElement（由 Frame.Ele* 返回），均为 JS 语义。
 type Frame struct {
 	id      cdp.FrameID
 	url     string
@@ -104,8 +101,7 @@ func (t *Tab) Frames(ctx context.Context) ([]*Frame, error) {
 		out = append(out, f)
 	}
 	if len(out) == 0 {
-		// 与 FrameByURL / FrameByName 保持一致：找不到就报哨兵错误，
-		// 而不是返回空切片让调用方去猜「到底是没有 iframe 还是查询失败」。
+		// 与 FrameByURL / FrameByName 一致：找不到就报哨兵错误，而非返回空切片让调用方去猜。
 		return nil, errs.ErrFrameNotFound
 	}
 	return out, nil
@@ -153,11 +149,10 @@ func (t *Tab) bindFrame(ctx context.Context, info frameInfo, loc frameLocator) (
 	}, nil
 }
 
-// Frame 按选择器定位页面里的 <iframe> 元素，返回对应的框架对象。
+// Frame 按选择器定位页面里的 <iframe> 元素，返回对应框架对象。
 //
-// 定位原理：先取该元素在 DOM 里的 nodeID，再对每个框架调 DOM.getFrameOwner
-// 拿到「拥有这个框架的 iframe 元素」的 nodeID，两者相等即命中。
-// 比用 src URL 比对精确得多——about:blank 或多重嵌套时 URL 会重复。
+// 定位原理：先取该元素的 nodeID，再对每个框架调 DOM.getFrameOwner 拿到「拥有该框架的 iframe
+// 元素」的 nodeID，两者相等即命中。比 src URL 比对精确（about:blank 或多重嵌套时 URL 会重复）。
 func (t *Tab) Frame(ctx context.Context, sel Selector) (*Frame, error) {
 	if err := sel.validate(); err != nil {
 		return nil, err
@@ -201,14 +196,12 @@ func (t *Tab) Frame(ctx context.Context, sel Selector) (*Frame, error) {
 	return t.bindFrame(ctx, *target, frameLocator{selector: sel, hasSel: true})
 }
 
-// findFrame 是「拉框架树 → 遍历找第一个匹配的 → bindFrame」这条骨架的唯一实现。
+// findFrame 是「拉框架树 → 遍历找第一个匹配 → bindFrame」骨架的唯一实现。
 //
-// FrameByURL / FrameByName 只有判据（matcher）和未命中文案（errMsg）不同；
-// 骨架里的三件事——取 infos、首个命中即绑定、找不到报 ErrFrameNotFound——
-// 抄两遍就会出现「一处补了错误处理、另一处忘了」的漂移。
+// FrameByURL / FrameByName 只有判据（matcher）与未命中文案（errMsg）不同；骨架收在此处，
+// 避免两处各写一遍错误处理导致漂移。
 //
-// 注意 Tab.Frame(sel) 不走这里：它多一步 DOM.getFrameOwner 与 nodeID 比对，
-// 判据不能退化成一个纯函数（详情见 Frame）。
+// Tab.Frame(sel) 不走这里：它多一步 DOM.getFrameOwner 与 nodeID 比对，判据不能退化成纯函数（见 Frame）。
 func (t *Tab) findFrame(ctx context.Context, loc frameLocator, matcher func(frameInfo) bool, errMsg string) (*Frame, error) {
 	infos, err := t.frameInfos(ctx)
 	if err != nil {
@@ -248,10 +241,8 @@ func (f *Frame) Eval(ctx context.Context, js string) (any, error) {
 
 // eval 在框架的 isolated world 内求值。
 //
-// 重试策略是「只对 world 失效重试」：页面导航后旧的 world 会被销毁，
-// 这时重建一次是必要的；但脚本自身抛异常（exception != nil）绝不能重试——
-// 那说明脚本确实执行了并失败，重试会把副作用（点击、提交、计数）重复做一遍。
-// 早期实现用「任意错误都重试」，已用真实浏览器复现出 DOM 副作用执行两次的问题。
+// 只对 world 失效重试：页面导航后旧 world 被销毁，重建一次是必要的；但脚本自身抛异常
+// （exception != nil）绝不能重试——那说明脚本已执行并失败，重试会重复副作用（点击、提交、计数）。
 func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 	var res any
 	run := func(worldID runtime.ExecutionContextID) error {
@@ -265,8 +256,7 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 				return err
 			}
 			if exception != nil {
-				// 用哨兵包一层：调用方能用 errors.Is 判断是脚本报错而非环境问题，
-				// 上层的重试逻辑也据此拒绝重试。
+				// 用哨兵包一层：调用方可用 errors.Is 判断是脚本报错而非环境问题，上层重试逻辑据此拒绝重试。
 				return fmt.Errorf("%w: %s", errs.ErrFrameScript, cdpkit.ExceptionText(exception))
 			}
 			res = cdpkit.DecodeRemoteValue(v)
@@ -279,15 +269,14 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 		return res, nil
 	}
 	if errors.Is(err, errs.ErrFrameScript) {
-		return nil, err // 脚本自己出错，重试无意义且会重复副作用
+		return nil, err // 脚本自身出错，重试无意义且会重复副作用
 	}
-	// world 失效的第一种情况：框架还在，只是 execution context 被换了
+	// world 失效情形一：框架还在，只是 execution context 被换了
 	if newID, e := f.recreateWorld(ctx); e == nil {
 		f.worldID = newID
 		return res, run(f.worldID)
 	}
-	// 第二种情况：顶层页面重新导航，整个 iframe 被重建，老 frameID 已不存在。
-	// 此时按当初的定位依据重新找一次，再建 world。
+	// 情形二：顶层页面重新导航，整个 iframe 被重建，老 frameID 已不存在；按当初定位依据重新找一次再建 world。
 	if e := f.relocate(ctx); e == nil {
 		return res, run(f.worldID)
 	}

@@ -28,7 +28,7 @@ import (
 // 进日志、会拿它做人工排障、偶尔会直接比对字符串。一次「只为分包、不改行为」的
 // 重构不该让它们静默漂移——所以把重构前的原文固化在这里当回归网。
 //
-// 表里的文案逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
+// 表里的文案逐字取自 API 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
 // 新增哨兵错误时同步加进来；**修改已有文案要有明确理由**，改不动就是这里的意义。
 func TestPublicErrorMessagesAreFrozen(t *testing.T) {
 	want := []struct {
@@ -127,7 +127,7 @@ func TestErrorAliasesShareIdentityWithErrs(t *testing.T) {
 // TestCookieJSONTagsAreFrozen 钉住 Cookie 的字段名、JSON tag 与类型。
 //
 // 这是一条**跨包契约**：session.CookieItem 用同一套字段名，浏览器导出的 cookies.json
-// 要能被 session 读入，session 存盘的也要能被浏览器导入（设计文档 §8.2 第 7 条）。
+// 要能被 session 读入，session 存盘的也要能被浏览器导入。
 // 别名化（type Cookie = cookie.Cookie）之后，字段列表不再出现在
 // `go doc -all ./chromium` 的输出里，API 闸门看不见它，只能靠这个用例守。
 //
@@ -214,7 +214,7 @@ func TestRecordFieldsAreFrozen(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// S5：6 个页面对象类型别名化后的冻结
+// 6 个页面对象类型别名化后的冻结
 //
 // `type Tab = page.Tab` 这类别名不做任何转换（同一底层类型，*Tab 可直接互换），
 // 但它会让这 6 个类型的字段与方法从 `go doc -all ./chromium` 的输出里消失，
@@ -223,8 +223,7 @@ func TestRecordFieldsAreFrozen(t *testing.T) {
 // 所以这里用**方法表达式 var 块**把全部导出方法的签名冻住：签名一旦改动，
 // 本包直接编译不过。这比反射用例严格 —— 反射查得到方法存在，查不出签名。
 //
-// 表里的签名逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt），
-// 与 s0-apicheck.py 里那 6 条「类型塌缩」规则共用同一个事实来源。
+// 表里的签名逐字取自 API 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
 
 // Tab 的 35 个导出方法签名。
 var (
@@ -386,15 +385,15 @@ func TestPageFieldsAreFrozen(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// S6：Browser / BrowserContext 别名化后的冻结
+// Browser / BrowserContext 别名化后的冻结
 //
-// 与 S5 同一个病因：`type Browser = browser.Browser` 之后，这两个类型的字段与
+// 病因同 page 别名：`type Browser = browser.Browser` 之后，这两个类型的字段与
 // 全部方法从 `go doc -all ./chromium` 里消失，公开 API 闸门看不见它们。
 //
 // 方法表达式 var 块把 17 个导出方法的签名冻在**编译期**：签名一改，本包就编译不过。
 // 这比反射严格 —— 反射查得到方法存在，查不出签名。
 //
-// 签名逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
+// 签名逐字取自 API 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
 //
 // 注意 ContextOption：它在门面（本文件所在包）与 browser 各声明一次，
 // 都是 chromedp.CreateBrowserContextOption 的别名，因此是同一个类型，
@@ -431,7 +430,7 @@ var (
 // tabs / 三把锁等一大堆状态。任何一个变成导出字段，就等于把「连接怎么建、锁怎么加」
 // 变成了对外契约，将来想改并发模型就改不动了 —— 所以这里必须钉死 0。
 //
-// 反射的 NumField() 会把私有字段一起数进去，所以只数 IsExported() 的（同 §16.11）。
+// 反射的 NumField() 会把私有字段一起数进去，所以只数 IsExported() 的。
 func TestBrowserFieldsAreFrozen(t *testing.T) {
 	for name, rt := range map[string]reflect.Type{
 		"Browser":        reflect.TypeFor[Browser](),
@@ -447,15 +446,15 @@ func TestBrowserFieldsAreFrozen(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// S7：Profile / ProfileManager 别名化后的冻结
+// Profile / ProfileManager 别名化后的冻结
 //
-// 与 S5/S6 同一个病因：`type Profile = profile.Profile` 之后，这两个类型的字段与
+// 病因同 page / browser 别名：`type Profile = profile.Profile` 之后，这两个类型的字段与
 // 全部方法从 `go doc -all ./chromium` 里消失，公开 API 闸门看不见它们。
 //
 // 方法表达式 var 块把 6 个导出方法的签名冻在**编译期**：签名一改，本包就编译不过。
 // 这比反射严格 —— 反射查得到方法存在，查不出签名。
 //
-// 签名逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
+// 签名逐字取自 API 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
 
 // Profile 的 1 个导出方法签名。
 var (
@@ -478,7 +477,7 @@ var (
 // 它的 baseDir / basePort / opts / 端口池 / per-name 锁全是内部状态，
 // 任何一个变成导出字段就等于把「档案目录怎么算、端口怎么分」写进对外契约。
 //
-// 反射的 NumField() 会把私有字段一起数进去，所以只数 IsExported() 的（同 §16.11）。
+// 反射的 NumField() 会把私有字段一起数进去，所以只数 IsExported() 的。
 func TestProfileFieldsAreFrozen(t *testing.T) {
 	rt := reflect.TypeFor[Profile]()
 	exported := 0

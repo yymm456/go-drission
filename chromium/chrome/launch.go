@@ -17,9 +17,8 @@ import (
 
 // ResolveChromePath 确定最终用于启动的浏览器可执行文件。
 //
-// 规则：调用方用 WithChromePath 显式指定时，路径不存在就直接报错（不悄悄回退，
-// 否则拼写错误会被静默掩盖）；未指定时才走自动发现，找不到则连同搜索过的
-// 全部位置一起返回，方便调用方一眼看出该装到哪。
+// 调用方用 WithChromePath 显式指定时，路径不存在直接报错（不回退，否则拼写错误会被静默掩盖）；
+// 未指定时走自动发现，找不到则连同搜索过的全部位置一起返回。
 func ResolveChromePath(o *config.Options) (string, error) {
 	if o.ChromePathSet {
 		if !fileExists(o.ChromePath) {
@@ -94,11 +93,10 @@ func LaunchChrome(ctx context.Context, port int, o *config.Options) (*exec.Cmd, 
 	if err != nil {
 		return nil, err
 	}
-	// 刻意不用 exec.CommandContext：Chrome 的生命周期归 Browser 管（Close 里杀进程树），
-	// 不该跟着连接握手的 ctx 走。若绑上 ctx，调用方在某个操作超时后取消派生 ctx，
-	// 就会把正在使用的浏览器一起杀掉。
+	// 不用 exec.CommandContext：Chrome 的生命周期归 Browser 管（Close 里杀进程树），不该跟着连接握手的 ctx 走。
+	// 若绑上 ctx，调用方在某个操作超时后取消派生 ctx，就会把正在使用的浏览器一起杀掉。
 	//
-	//nolint:noctx // 见上：进程生命周期由 Browser 管理，不随调用方 ctx 取消
+	//nolint:noctx // 进程生命周期由 Browser 管理，不随调用方 ctx 取消
 	cmd := exec.Command(chromePath, args...)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)

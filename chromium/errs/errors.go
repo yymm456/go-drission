@@ -1,8 +1,7 @@
 // Package errs 是本库全部哨兵错误的唯一定义处。
 //
-// 之所以独立成包：错误值被每一个实现包（browser / page / network / cookie / profile /
-// chrome）引用，放在任何一个上层包里都会让其它包反向依赖它，形成环。这里把它压到最底层，
-// 由门面 chromium 按原名转发给调用方，调用方的 errors.Is 判断与错误文案都不受影响。
+// 错误值被每一个实现包（browser / page / network / cookie / profile / chrome）引用，放在任何上层包里
+// 都会形成环，因此压到最底层，由门面 chromium 按原名转发，errors.Is 判断与错误文案不受影响。
 package errs
 
 import "errors"
@@ -61,10 +60,9 @@ var (
 
 	// ErrBrowserMismatch 表示端口上确实有一个 Chrome，但它不是调用方期望的那一个。
 	//
-	// 典型场景：调用方显式指定了 WithUserDataDir("./profiles/a") 且端口上已有
-	// 别的 Chrome 在跑。若直接接管，你以为在用档案 A，实际用的是别人的浏览器
-	// （别的用户数据目录、别人的登录态），Cookie 隔离与多账号方案全部静默失效。
-	// 确认「就是它」请加 WithTrustExistingBrowser()。
+	// 典型场景：显式指定了 WithUserDataDir("./profiles/a") 但端口上已有别的 Chrome 在跑。
+	// 若直接接管，实际用的是别人的浏览器（别的用户数据目录与登录态），Cookie 隔离与多账号方案
+	// 会静默失效。确认无误请加 WithTrustExistingBrowser()。
 	ErrBrowserMismatch = errors.New("chromium: 端口上的浏览器与期望的用户数据目录不一致")
 
 	// ErrInvalidCookie 表示待注入的 Cookie 参数不合法。
@@ -83,7 +81,6 @@ var (
 
 // ErrFrameScript 表示「iframe 内的脚本自身抛出异常」。
 //
-// 内部使用，门面不转发：Frame.eval 依赖它把「脚本报错」与「world 失效」区分开——
-// 前者绝不允许重试（重试会把点击、提交等副作用重复执行一遍），
-// 后者必须重试（页面导航后旧的 execution context 会被销毁）。
+// 内部使用，门面不转发：Frame.eval 依赖它区分「脚本报错」与「world 失效」——前者绝不重试
+// （重试会重复点击、提交等副作用），后者必须重试（导航后旧 execution context 会被销毁）。
 var ErrFrameScript = errors.New("iframe 内执行 JS 失败")

@@ -14,9 +14,8 @@ import (
 	"github.com/yymm456/go-drission/chromium/page"
 )
 
-// Profile 代表一个命名的浏览器档案：独立的用户数据目录 + 独立端口，
-// 因此各 Profile 之间的 Cookie / 登录态 / 代理 / UA 完全隔离，且登录态持久化到磁盘，
-// 进程重启后用同名 Profile 打开即可恢复登录，适合多账户场景。
+// Profile 代表一个命名的浏览器档案：独立的用户数据目录 + 独立端口，因此各 Profile 之间的
+// Cookie / 登录态 / 代理 / UA 完全隔离，登录态持久化到磁盘，进程重启后用同名 Profile 打开即可恢复。
 type Profile struct {
 	Name    string // 档案名（调用方传入的原始名字）
 	Dir     string // 该档案的用户数据目录
@@ -29,22 +28,16 @@ func (p *Profile) Browser() *browser.Browser { return p.browser }
 
 // ProfileManager 管理多个命名 Profile，实现多账户隔离。
 //
-// 每个 Profile 按名字映射到固定的用户数据目录（baseDir/<name>），端口从 basePort
-// 起按打开顺序递增分配，互不冲突。同名 Profile 复用同一个 Browser；首次打开时才真正
-// 连接/启动 Chrome（懒加载）。
+// 每个 Profile 按名字映射到固定目录（baseDir/<name>），端口从 basePort 起按打开顺序递增分配。
+// 同名 Profile 复用同一 Browser；首次打开时才连接/启动 Chrome（懒加载）。
 //
-// 并发模型：全局锁（mu）只用于保护注册表与端口分配这类瞬时操作；真正耗时的
-// OpenPage（可能要冷启动 Chrome，十几秒）放在 per-name 锁内执行。
-// 结果是「同名串行、异名并行」——多个档案可以同时打开，不会互相阻塞。
+// 并发模型：全局锁（mu）只保护注册表与端口分配等瞬时操作；耗时的 OpenPage（可能冷启动 Chrome）
+// 放在 per-name 锁内执行，结果为「同名串行、异名并行」。
 //
 // 典型用法：
 //
-//	pm := chromium.NewProfileManager("./profiles", 9300,
-//	    chromium.WithHeadless(true),
-//	    chromium.WithLogger(logger),
-//	)
+//	pm := chromium.NewProfileManager("./profiles", 9300, chromium.WithHeadless(true))
 //	defer pm.CloseAll()
-//
 //	_, tabA, err := pm.Open(ctx, "account_001") // 账户 A 的独立浏览器
 //	_, tabB, err := pm.Open(ctx, "account_002") // 账户 B，与 A 完全隔离
 type ProfileManager struct {
@@ -54,26 +47,20 @@ type ProfileManager struct {
 
 	mu       sync.Mutex
 	profiles map[string]*Profile
-	// inflight 为每个档案名维护一把锁，用于把耗时的 OpenPage 串行化到同名档案上；
-	// 不同名字各用各的锁，因此互不影响。
+	// inflight 为每个档案名维护一把锁，把耗时的 OpenPage 串行化到同名档案上；不同名字各用各的锁。
 	//
-	// 这个 map 只增不删：Close 若在此处 delete，正在持锁 OpenPage 的 goroutine 仍用旧锁，
-	// 而紧随其后的 Open 会新建一把新锁 —— 两者同时启动同一个 user-data-dir 的 Chrome，
-	// 正是 per-name 锁要避免的事。条目数等于历史档案名数量，量级可忽略，
-	// 用「少量内存」换「不可能出现双份锁」是划算的。
+	// 这个 map 只增不删：Close 若在此处 delete，正在持锁 OpenPage 的 goroutine 仍用旧锁，而随后的
+	// Open 会新建一把新锁——两者同时启动同一 user-data-dir 的 Chrome，正是 per-name 锁要避免的。
+	// 条目数等于历史档案名数量，量级可忽略。
 	inflight map[string]*sync.Mutex
-	// free 回收打开失败时占用的端口号，优先复用，避免反复失败把端口段白白耗尽
+	// free 回收打开失败时占用的端口号，优先复用，避免反复失败耗尽端口段
 	free   []int
 	next   int // 端口分配计数，保证同一 manager 内端口唯一
 	closed bool
 }
 
-// NewProfileManager 创建一个 Profile 管理器。
-//   - baseDir：所有 Profile 用户数据目录的根目录，每个 Profile 落在 baseDir/<name>。
-//   - basePort：起始调试端口，按打开顺序递增分配（basePort、basePort+1 ...）。
-//     传 0 则使用默认起始端口 9300。
-//   - opts：应用于每个 Profile 的公共配置项（如 WithHeadless / WithProxy / WithLogger）。
-//     注意：不要在此传 WithUserDataDir，它会被 Profile 各自的目录覆盖。
+// NewProfileManager 创建一个 Profile 管理器；baseDir / basePort / opts 的含义见门面
+// chromium.NewProfileManager，两处不再各写一份（避免改一处漏一处）。
 func NewProfileManager(baseDir string, basePort int, opts ...config.Option) *ProfileManager {
 	if basePort <= 0 {
 		basePort = 9300

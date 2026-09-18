@@ -39,7 +39,6 @@ func (l *Listener) handleRequest(e *cdpnetwork.EventRequestWillBeSent) {
 	rec.Method = e.Request.Method
 	rec.RequestHeaders = flattenNetworkHeaders(e.Request.Headers)
 
-	// 请求体：优先从 PostDataEntries 获取
 	hasBody := false
 	if len(e.Request.PostDataEntries) > 0 {
 		b := e.Request.PostDataEntries[0].Bytes
@@ -99,21 +98,17 @@ func (l *Listener) handleResponse(e *cdpnetwork.EventResponseReceived) {
 	}
 }
 
-// fetchBodyAsync 是「后台补取 body 并回填记录」这条骨架的唯一实现。
+// fetchBodyAsync 是「后台补取 body 并回填记录」骨架的唯一实现。
 //
-// track → 信号量进出 → chromedp.Run 里执行一次 CDP 调用 → 空体/失败直接丢弃 → 回填。
-// handleRequest（补请求体）与 handleLoadingFinished（补响应体）除了取哪个 body、
-// 写哪个字段之外完全一样，抄两遍就会漂移。
+// 流程：track → 信号量进出 → chromedp.Run 里执行一次 CDP 调用 → 空体/失败直接丢弃 → 回填。
+// 抽这一层是因为 handleRequest（补请求体）与 handleLoadingFinished（补响应体）
+// 除了「取哪个 body、写哪个字段」之外完全相同。
 //
-// fetch 收到的是 chromedp 的 action 上下文（由 runCtx() 派生，带监听生命周期）；
-// 返回空体一律视为「没取到」，不做回填——对两个调用方都是正确的。
-//
-// assign 在 l.mu 保护下、以「按 reqID 查到的现存记录」为参数被调用，由调用方决定
-// 「已经填过就不覆盖」等判据。记录若已被 Clear / FIFO 淘汰则直接跳过回填：
-// 写进一条已不在记录表里的对象没有意义。
+// fetch 收到 chromedp 的 action 上下文（由 runCtx() 派生，带监听生命周期）；返回空体一律视为「没取到」，不回填。
+// assign 在 l.mu 保护下以现存记录为参数被调用，由调用方决定「已填过就不覆盖」等判据；记录若已被
+// Clear / FIFO 淘汰则直接跳过回填。
 func (l *Listener) fetchBodyAsync(reqID string, fetch func(context.Context) ([]byte, error), assign func(*Record, []byte)) {
 	l.track(func() {
-		// 信号量限并发；defer 保证任何返回路径都释放，不会把限量永久占住
 		l.sem <- struct{}{}
 		defer func() { <-l.sem }()
 
