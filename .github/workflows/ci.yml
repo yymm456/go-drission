@@ -67,5 +67,8 @@ jobs:
           cache: true
 
       # 没有浏览器时 smoke 包内的用例会自己 skip，不会误报失败。
-      - name: go test -tags smoke
-        run: go test -tags smoke -timeout 5m -v ./smoke/...
+      # -race 是必需的：本包覆盖「并发 NewTab 与 Tabs 交叉」「关闭与操作交叉」这类
+      # 只有真实浏览器才跑得出来的竞态（BUG-11 的回归就靠它守）。
+      # 超时给到 10m：含新增的稳定性用例（默认 5 轮启停 + Chrome 进程回收断言）。
+      - name: go test -race -tags smoke
+        run: go test -race -tags smoke -timeout 10m -v ./smoke/...

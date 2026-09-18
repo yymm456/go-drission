@@ -924,6 +924,9 @@ golangci-lint run
 go test -tags smoke -timeout 5m ./smoke/...
 ```
 
+完整的分层说明、长时间稳定性与资源泄漏的跑法、以及当前稳定基线（Go / OS / Chromium 版本）
+见 [`TESTING.md`](./TESTING.md)。
+
 本地没装 golangci-lint 时，用与 go.mod 一致的工具链自建一个（二进制必须是拿
 不低于 `go.mod` 声明版本的 Go 编译的，否则会直接报「language version lower than targeted」）：
 

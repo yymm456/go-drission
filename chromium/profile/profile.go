@@ -232,6 +232,10 @@ func (pm *ProfileManager) Close(name string) {
 }
 
 // CloseAll 关闭所有已打开的 Profile 浏览器。磁盘用户数据目录全部保留。
+//
+// 这是**终态**操作：调用后本 manager 不再接受 Open（返回 ErrProfileClosed），
+// 语义与 sql.DB.Close 一致。想继续用请新建一个 ProfileManager。
+// 重复调用是安全的（幂等）。
 func (pm *ProfileManager) CloseAll() {
 	pm.mu.Lock()
 	pm.closed = true
