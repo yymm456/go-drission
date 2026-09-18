@@ -12,7 +12,7 @@
 
 ## 安装
 
-需要 **Go 1.26**。本项目固定使用该版本，不向上也不向下兼容。
+需要 **Go 1.26**。本项目使用该版本。
 
 ```bash
 go get github.com/yymm456/go-drission@latest
