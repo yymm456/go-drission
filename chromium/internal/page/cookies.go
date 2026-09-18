@@ -1,4 +1,4 @@
-package chromium
+package page
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 
 // SetCookie 注入单个 Cookie。
 // 注意：Cookie 必须带 Domain（或改用 SetCookieByURL），否则返回 ErrInvalidCookie。
-func (t *Tab) SetCookie(ctx context.Context, c Cookie) error {
+func (t *Tab) SetCookie(ctx context.Context, c cookie.Cookie) error {
 	if err := cookie.ValidateCookie(c, 1); err != nil {
 		return err
 	}
@@ -29,7 +29,7 @@ func (t *Tab) SetCookie(ctx context.Context, c Cookie) error {
 // 不会泄漏到其它上下文或默认上下文——已由 smoke 用例验证。
 // 注入时机上，先 SetCookies 再 Navigate 是可行的（Cookie 会在首次请求前就位），
 // 因此免登录不需要「先打开页面 → 注入 → 刷新」这套多余步骤。
-func (t *Tab) SetCookies(ctx context.Context, cookies []Cookie) error {
+func (t *Tab) SetCookies(ctx context.Context, cookies []cookie.Cookie) error {
 	if len(cookies) == 0 {
 		return nil
 	}
@@ -48,7 +48,7 @@ func (t *Tab) SetCookies(ctx context.Context, cookies []Cookie) error {
 // 典型用法（浏览器免登录）：
 //
 //	tab.LoginWithCookies(ctx, "https://site.com/home", sess.Jar())
-func (t *Tab) ImportCookiesSource(ctx context.Context, src CookieSource) (int, error) {
+func (t *Tab) ImportCookiesSource(ctx context.Context, src cookie.CookieSource) (int, error) {
 	if src == nil {
 		return 0, fmt.Errorf("%w: CookieSource 为 nil", errs.ErrInvalidCookie)
 	}
@@ -83,7 +83,7 @@ func (t *Tab) ImportCookiesJSON(ctx context.Context, data []byte) (int, error) {
 // ctx 只控制「注入 + 导航」这一阶段，不是标签页的生命周期。
 // 导航失败时返回错误；登录是否真的生效由调用方按业务判断（例如检查跳转后的 URL
 // 是否离开了登录页），本方法不做站点相关的臆断。
-func (t *Tab) LoginWithCookies(ctx context.Context, rawURL string, src CookieSource) error {
+func (t *Tab) LoginWithCookies(ctx context.Context, rawURL string, src cookie.CookieSource) error {
 	data, err := src.ExportJSON()
 	if err != nil {
 		return fmt.Errorf("导出 Cookie 失败: %w", err)
@@ -129,14 +129,14 @@ func (t *Tab) GetCookies(ctx context.Context, urls ...string) ([]*network.Cookie
 }
 
 // Cookies 返回当前隔离上下文内的全部 Cookie（转为可序列化的 Cookie 结构）。
-func (t *Tab) Cookies(ctx context.Context, urls ...string) ([]Cookie, error) {
+func (t *Tab) Cookies(ctx context.Context, urls ...string) ([]cookie.Cookie, error) {
 	raw, err := t.GetCookies(ctx, urls...)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Cookie, 0, len(raw))
+	out := make([]cookie.Cookie, 0, len(raw))
 	for _, c := range raw {
-		out = append(out, Cookie{
+		out = append(out, cookie.Cookie{
 			Name:     c.Name,
 			Value:    c.Value,
 			Domain:   c.Domain,

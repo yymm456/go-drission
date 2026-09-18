@@ -1,9 +1,9 @@
-package chromium
+package page
 
 import (
 	"context"
 
-	"github.com/chromedp/cdproto/page"
+	cdppage "github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
 	"github.com/yymm456/go-drission/chromium/internal/config"
@@ -80,7 +80,7 @@ func injectAntiDetect(ctx context.Context, o *config.Options) error {
 	defer cancel()
 
 	return chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		_, err := page.AddScriptToEvaluateOnNewDocument(antiDetectScript).Do(c)
+		_, err := cdppage.AddScriptToEvaluateOnNewDocument(antiDetectScript).Do(c)
 		return err
 	}))
 }

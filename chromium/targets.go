@@ -7,6 +7,8 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+
+	"github.com/yymm456/go-drission/chromium/internal/page"
 )
 
 // targetInfo 是「一个归 Browser 托管的 page target」的概要。
@@ -95,12 +97,10 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 		for _, t := range b.tabs {
 			url, ok := alive[t.ID]
 			if !ok {
-				if t.cancel != nil {
-					t.cancel()
-				}
+				page.ReleaseTab(t)
 				continue
 			}
-			t.setURL(url)
+			page.SetTabURL(t, url)
 			known[t.ID] = t
 			kept = append(kept, t)
 		}
@@ -146,9 +146,7 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 	}
 	for _, tab := range attached {
 		if exist, dup := byID[tab.ID]; dup {
-			if tab.cancel != nil {
-				tab.cancel()
-			}
+			page.ReleaseTab(tab)
 			known[tab.ID] = exist
 			continue
 		}
@@ -188,8 +186,8 @@ func (b *Browser) attachTarget(ctx context.Context, id target.ID, url string) (*
 	if err != nil {
 		return nil, err
 	}
-	tab := b.newTabHandle(tabCtx, id, cancel)
-	tab.setURL(url)
+	tab := page.NewTabHandle(tabCtx, id, cancel, b.opts)
+	page.SetTabURL(tab, url)
 	// 附着成功意味着浏览器里已有一个真实标签页，可以安全关闭锚点空白页（sync.Once 保证只关一次）。
 	b.closeAnchorOnce(ctx)
 	return tab, nil

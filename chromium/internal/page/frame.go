@@ -1,4 +1,4 @@
-package chromium
+package page
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
-	"github.com/chromedp/cdproto/page"
+	cdppage "github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
@@ -68,7 +68,7 @@ type frameInfo struct {
 }
 
 // flattenFrames 把嵌套的框架树摊平成一维列表。
-func flattenFrames(tree *page.FrameTree, out *[]frameInfo) {
+func flattenFrames(tree *cdppage.FrameTree, out *[]frameInfo) {
 	if tree == nil || tree.Frame == nil {
 		return
 	}
@@ -113,10 +113,10 @@ func (t *Tab) Frames(ctx context.Context) ([]*Frame, error) {
 
 // frameInfos 拉取并摊平框架树，同时剔除主框架（树根）。
 func (t *Tab) frameInfos(ctx context.Context) ([]frameInfo, error) {
-	var tree *page.FrameTree
+	var tree *cdppage.FrameTree
 	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 		var e error
-		tree, e = page.GetFrameTree().Do(c)
+		tree, e = cdppage.GetFrameTree().Do(c)
 		return e
 	}))
 	if err != nil {
@@ -346,7 +346,7 @@ func (f *Frame) recreateWorld(ctx context.Context) (runtime.ExecutionContextID, 
 func (t *Tab) createIsolatedWorld(ctx context.Context, id cdp.FrameID) (runtime.ExecutionContextID, error) {
 	var worldID runtime.ExecutionContextID
 	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		res, e := page.CreateIsolatedWorld(id).
+		res, e := cdppage.CreateIsolatedWorld(id).
 			WithGrantUniveralAccess(true).
 			Do(c)
 		if e != nil {

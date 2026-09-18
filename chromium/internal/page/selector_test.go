@@ -1,10 +1,12 @@
-package chromium
+package page
 
 import (
 	"context"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 func TestSelectorConstructors(t *testing.T) {
@@ -115,7 +117,7 @@ func TestSelectorValidate(t *testing.T) {
 		CSS(""), XPath(""), ID(""), JS(""), {},
 	}
 	for _, s := range empties {
-		if err := s.validate(); !errors.Is(err, ErrSelectorRequired) {
+		if err := s.validate(); !errors.Is(err, errs.ErrSelectorRequired) {
 			t.Errorf("空选择器 %v 期望 ErrSelectorRequired，实际 %v", s.Mode(), err)
 		}
 	}
@@ -136,7 +138,7 @@ func TestWrapNotFound(t *testing.T) {
 	}
 
 	wrapped := wrapNotFound(context.DeadlineExceeded, CSS("#miss"))
-	if !errors.Is(wrapped, ErrElementNotFound) {
+	if !errors.Is(wrapped, errs.ErrElementNotFound) {
 		t.Errorf("超时应包装成 ErrElementNotFound，实际 %v", wrapped)
 	}
 	if !errors.Is(wrapped, context.DeadlineExceeded) {

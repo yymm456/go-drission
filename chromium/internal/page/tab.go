@@ -1,4 +1,4 @@
-package chromium
+package page
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
-	"github.com/chromedp/cdproto/page"
+	cdppage "github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -310,7 +310,7 @@ func (t *Tab) waitElementCount(ctx context.Context, sel Selector, n int) error {
 // 多窗口（如隔离上下文各自开窗）场景下交互前应先调用本方法。
 func (t *Tab) BringToFront(ctx context.Context) error {
 	return t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		return page.BringToFront().Do(c)
+		return cdppage.BringToFront().Do(c)
 	}))
 }
 
@@ -439,6 +439,6 @@ func (t *Tab) Screenshot(ctx context.Context, path string) error {
 // Reload 重新加载当前页面
 func (t *Tab) Reload(ctx context.Context) error {
 	return t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		return page.Reload().Do(c)
+		return cdppage.Reload().Do(c)
 	}))
 }

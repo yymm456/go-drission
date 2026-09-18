@@ -5,7 +5,11 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/chromedp/cdproto/cdp"
+	cdpnetwork "github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/target"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
@@ -205,6 +209,178 @@ func TestRecordFieldsAreFrozen(t *testing.T) {
 		}
 		if kind := f.Type.Kind().String(); kind != exp {
 			t.Errorf("字段 %s 的类型 = %s，期望 %s", f.Name, kind, exp)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// S5：6 个页面对象类型别名化后的冻结
+//
+// `type Tab = page.Tab` 这类别名不做任何转换（同一底层类型，*Tab 可直接互换），
+// 但它会让这 6 个类型的字段与方法从 `go doc -all ./chromium` 的输出里消失，
+// 公开 API 闸门（只看签名清单）因此对它们彻底失明。
+//
+// 所以这里用**方法表达式 var 块**把全部导出方法的签名冻住：签名一旦改动，
+// 本包直接编译不过。这比反射用例严格 —— 反射查得到方法存在，查不出签名。
+//
+// 表里的签名逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt），
+// 与 s0-apicheck.py 里那 6 条「类型塌缩」规则共用同一个事实来源。
+
+// Tab 的 35 个导出方法签名。
+var (
+	_ func(*Tab, context.Context) error                                    = (*Tab).BringToFront
+	_ func(*Tab, context.Context, ...string) ([]Cookie, error)             = (*Tab).Cookies
+	_ func(*Tab, context.Context) (string, error)                          = (*Tab).CurrentURL
+	_ func(*Tab, Selector) *Element                                        = (*Tab).Ele
+	_ func(*Tab, string) *Element                                          = (*Tab).EleCSS
+	_ func(*Tab, string) *Element                                          = (*Tab).EleID
+	_ func(*Tab, string) *Element                                          = (*Tab).EleJS
+	_ func(*Tab, string) *Element                                          = (*Tab).EleXPath
+	_ func(*Tab, context.Context, string) (any, error)                     = (*Tab).Eval
+	_ func(*Tab, context.Context, string, ...string) error                 = (*Tab).ExportCookies
+	_ func(*Tab, context.Context, ...string) ([]byte, error)               = (*Tab).ExportCookiesJSON
+	_ func(*Tab, context.Context, Selector) (*Frame, error)                = (*Tab).Frame
+	_ func(*Tab, context.Context, string) (*Frame, error)                  = (*Tab).FrameByName
+	_ func(*Tab, context.Context, string) (*Frame, error)                  = (*Tab).FrameByURL
+	_ func(*Tab, context.Context) ([]*Frame, error)                        = (*Tab).Frames
+	_ func(*Tab, context.Context, ...string) ([]*cdpnetwork.Cookie, error) = (*Tab).GetCookies
+	_ func(*Tab, context.Context) (string, error)                          = (*Tab).HTML
+	_ func(*Tab, context.Context, string) error                            = (*Tab).ImportCookies
+	_ func(*Tab, context.Context, []byte) (int, error)                     = (*Tab).ImportCookiesJSON
+	_ func(*Tab, context.Context, CookieSource) (int, error)               = (*Tab).ImportCookiesSource
+	_ func(*Tab, string) *Listener                                         = (*Tab).Listen
+	_ func(*Tab, context.Context, string, CookieSource) error              = (*Tab).LoginWithCookies
+	_ func(*Tab, context.Context, string, []byte) error                    = (*Tab).LoginWithCookiesJSON
+	_ func(*Tab, context.Context, string) error                            = (*Tab).Navigate
+	_ func(*Tab, context.Context) error                                    = (*Tab).Reload
+	_ func(*Tab, context.Context, string) error                            = (*Tab).Screenshot
+	_ func(*Tab, context.Context, Cookie) error                            = (*Tab).SetCookie
+	_ func(*Tab, context.Context, []Cookie) error                          = (*Tab).SetCookies
+	_ func(*Tab, time.Duration)                                            = (*Tab).SetTimeout
+	_ func(*Tab, context.Context) (string, error)                          = (*Tab).Title
+	_ func(*Tab) string                                                    = (*Tab).URL
+	_ func(*Tab) *WaitBuilder                                              = (*Tab).Wait
+	_ func(*Tab, context.Context) error                                    = (*Tab).WaitReady
+	_ func(*Tab, context.Context, string) error                            = (*Tab).WaitURL
+	_ func(*Tab, context.Context) (int64, error)                           = (*Tab).WindowID
+)
+
+// Element 的 14 个导出方法签名。
+var (
+	_ func(*Element, context.Context, string) (string, error) = (*Element).Attribute
+	_ func(*Element, context.Context) error                   = (*Element).Click
+	_ func(*Element, context.Context) error                   = (*Element).ClickJS
+	_ func(*Element, context.Context) (int, error)            = (*Element).Count
+	_ func(*Element, context.Context, string) (any, error)    = (*Element).Eval
+	_ func(*Element) Selector                                 = (*Element).Selector
+	_ func(*Element, context.Context, string) error           = (*Element).SendKeys
+	_ func(*Element, context.Context, string) error           = (*Element).SetValue
+	_ func(*Element) string                                   = (*Element).String
+	_ func(*Element) *Tab                                     = (*Element).Tab
+	_ func(*Element, context.Context) (string, error)         = (*Element).Text
+	_ func(*Element) *WaitBuilder                             = (*Element).Wait
+	_ func(*Element, context.Context, string) error           = (*Element).WaitText
+	_ func(*Element, context.Context) error                   = (*Element).WaitVisible
+)
+
+// Frame 的 12 个导出方法签名。
+var (
+	_ func(*Frame, Selector) *FrameElement               = (*Frame).Ele
+	_ func(*Frame, string) *FrameElement                 = (*Frame).EleCSS
+	_ func(*Frame, string) *FrameElement                 = (*Frame).EleID
+	_ func(*Frame, string) *FrameElement                 = (*Frame).EleJS
+	_ func(*Frame, string) *FrameElement                 = (*Frame).EleXPath
+	_ func(*Frame, context.Context, string) (any, error) = (*Frame).Eval
+	_ func(*Frame, context.Context) (string, error)      = (*Frame).HTML
+	_ func(*Frame) cdp.FrameID                           = (*Frame).ID
+	_ func(*Frame) string                                = (*Frame).Name
+	_ func(*Frame, context.Context, string) error        = (*Frame).Navigate
+	_ func(*Frame) string                                = (*Frame).URL
+	_ func(*Frame, context.Context) (string, error)      = (*Frame).URLNow
+)
+
+// FrameElement 的 7 个导出方法签名。
+var (
+	_ func(*FrameElement, context.Context) error           = (*FrameElement).Click
+	_ func(*FrameElement, context.Context) (int, error)    = (*FrameElement).Count
+	_ func(*FrameElement) *Frame                           = (*FrameElement).Frame
+	_ func(*FrameElement) Selector                         = (*FrameElement).Selector
+	_ func(*FrameElement, context.Context, string) error   = (*FrameElement).SetValue
+	_ func(*FrameElement) string                           = (*FrameElement).String
+	_ func(*FrameElement, context.Context) (string, error) = (*FrameElement).Text
+)
+
+// Selector 的 3 个导出方法签名。
+var (
+	_ func(Selector) bool   = (Selector).Empty
+	_ func(Selector) string = (Selector).Mode
+	_ func(Selector) string = (Selector).String
+)
+
+// WaitBuilder 的 9 个导出方法签名。
+var (
+	_ func(*WaitBuilder, int) *WaitBuilder           = (*WaitBuilder).Count
+	_ func(*WaitBuilder, context.Context) error      = (*WaitBuilder).Do
+	_ func(*WaitBuilder, *Element) *WaitBuilder      = (*WaitBuilder).Element
+	_ func(*WaitBuilder) *WaitBuilder                = (*WaitBuilder).Present
+	_ func(*WaitBuilder) *WaitBuilder                = (*WaitBuilder).Ready
+	_ func(*WaitBuilder, string) *WaitBuilder        = (*WaitBuilder).Text
+	_ func(*WaitBuilder, time.Duration) *WaitBuilder = (*WaitBuilder).Timeout
+	_ func(*WaitBuilder, string) *WaitBuilder        = (*WaitBuilder).URL
+	_ func(*WaitBuilder) *WaitBuilder                = (*WaitBuilder).Visible
+)
+
+// TestPageFieldsAreFrozen 钉住 6 个页面对象类型的**导出字段**。
+//
+// 与 TestCookieJSONTagsAreFrozen / TestRecordFieldsAreFrozen 同因：别名化之后
+// 字段列表不再出现在 go doc 输出里。Tab 有 2 个导出字段（用户直接读 tab.ID / tab.Ctx）；
+// 其余 5 个类型**一个导出字段都不该有** —— 它们的内部状态（元素的选择器、框架的
+// isolated world 等）一旦变成导出字段，就成了事实上的公开契约，将来改不动。
+func TestPageFieldsAreFrozen(t *testing.T) {
+	typ := reflect.TypeFor[Tab]()
+
+	// 只数**导出**字段：reflect 的 NumField 把私有字段也算进去（Tab 一共有 9 个，
+	// 其中 cancel / mu / url / timeout / antiMu / antiDetected / logger 都是内部状态）。
+	exported := 0
+	for f := range typ.Fields() {
+		if f.IsExported() {
+			exported++
+		}
+	}
+	if exported != 2 {
+		t.Fatalf("Tab 的**导出**字段数变了：期望 2（ID / Ctx），实际 %d", exported)
+	}
+
+	// 类型要比到具体类型，不能只比 Kind：target.ID 与 string 的 Kind 都是 string，
+	// 只比 Kind 的话「把 ID 换成裸 string」这种破坏会被静默放过。
+	want := map[string]reflect.Type{
+		"ID":  reflect.TypeFor[target.ID](),
+		"Ctx": reflect.TypeFor[context.Context](),
+	}
+	for name, exp := range want {
+		f, ok := typ.FieldByName(name)
+		if !ok {
+			t.Errorf("Tab 缺少导出字段 %s", name)
+			continue
+		}
+		if f.Type != exp {
+			t.Errorf("Tab.%s 的类型 = %s，期望 %s", name, f.Type, exp)
+		}
+	}
+
+	// 其余 5 个类型必须没有导出字段
+	others := map[string]reflect.Type{
+		"Element":      reflect.TypeFor[Element](),
+		"Frame":        reflect.TypeFor[Frame](),
+		"FrameElement": reflect.TypeFor[FrameElement](),
+		"Selector":     reflect.TypeFor[Selector](),
+		"WaitBuilder":  reflect.TypeFor[WaitBuilder](),
+	}
+	for name, rt := range others {
+		for f := range rt.Fields() {
+			if f.IsExported() {
+				t.Errorf("%s 多了一个导出字段 %s：内部状态不该进入公开契约", name, f.Name)
+			}
 		}
 	}
 }

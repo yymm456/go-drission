@@ -16,6 +16,7 @@ import (
 	"github.com/yymm456/go-drission/chromium/internal/chrome"
 	"github.com/yymm456/go-drission/chromium/internal/config"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/internal/page"
 )
 
 // Browser 持有整个浏览器连接和所有标签页
@@ -247,19 +248,6 @@ func (b *Browser) newTabCtx(ctx context.Context, opts ...chromedp.ContextOption)
 		return nil, nil, err
 	}
 	return tabCtx, cancel, nil
-}
-
-// newTabHandle 组装一个受本 Browser 托管的 *Tab，统一 timeout / logger 的来源。
-// 调用方随后按需 setURL。集中在这里，避免「新增字段只在某个构造点补上」。
-// ctx 放第一位，符合本库「与上下文相关的方法 ctx 在前」的约定（revive context-as-argument）。
-func (b *Browser) newTabHandle(ctx context.Context, id target.ID, cancel context.CancelFunc) *Tab {
-	return &Tab{
-		ID:      id,
-		Ctx:     ctx,
-		cancel:  cancel,
-		timeout: b.opts.DefaultTimeout,
-		logger:  b.opts.Logger,
-	}
 }
 
 // Port 返回当前 Browser 使用的调试端口
@@ -520,8 +508,8 @@ func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
 		return nil, fmt.Errorf("新建标签页成功，但未能定位它的 target ID")
 	}
 
-	tab := b.newTabHandle(tabCtx, newID, cancel)
-	tab.setURL("about:blank")
+	tab := page.NewTabHandle(tabCtx, newID, cancel, b.opts)
+	page.SetTabURL(tab, "about:blank")
 
 	b.mu.Lock()
 	b.tabs = append(b.tabs, tab)
@@ -531,7 +519,7 @@ func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
 	b.closeAnchorOnce(ctx)
 
 	// 反检测脚本只对新建的标签页注入；失败不影响使用，仅记录告警
-	if err := tab.ensureAntiDetect(tabCtx, b.opts); err != nil {
+	if err := page.InjectAntiDetect(tabCtx, tab, b.opts); err != nil {
 		b.opts.Logger.Warn("注入反检测脚本失败", "tab", newID, "err", err)
 	}
 	return tab, nil
@@ -595,9 +583,7 @@ func (b *Browser) CloseTab(ctx context.Context, tab *Tab) {
 	_ = chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return target.CloseTarget(tab.ID).Do(ctx)
 	}))
-	if tab.cancel != nil {
-		tab.cancel()
-	}
+	page.ReleaseTab(tab)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -684,9 +670,7 @@ func (b *Browser) Close() {
 		bc.Close()
 	}
 	for _, t := range tabs {
-		if t.cancel != nil {
-			t.cancel()
-		}
+		page.ReleaseTab(t)
 	}
 
 	b.mu.Lock()
@@ -726,7 +710,7 @@ func OpenPage(ctx context.Context, port int, opts ...Option) (*Browser, *Tab, er
 
 	// 复用来的标签页（接管已有 Chrome、或新启动时的初始空白页）没有经过 NewTab，
 	// 这里补一次注入；ensureAntiDetect 幂等，NewTab 已注入过的不会重复执行。
-	if err := tab.ensureAntiDetect(tab.Ctx, b.opts); err != nil {
+	if err := page.InjectAntiDetect(tab.Ctx, tab, b.opts); err != nil {
 		b.opts.Logger.Warn("注入反检测脚本失败", "tab", tab.ID, "err", err)
 	}
 

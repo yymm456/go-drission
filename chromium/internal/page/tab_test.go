@@ -1,16 +1,14 @@
-package chromium
+package page
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/chrome"
-	"github.com/yymm456/go-drission/chromium/internal/config"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // TestWaitBuilderValidation 覆盖等待条件的参数校验：
@@ -18,35 +16,35 @@ import (
 func TestWaitBuilderValidation(t *testing.T) {
 	tab := &Tab{}
 
-	if err := tab.Wait().Do(context.Background()); !errors.Is(err, ErrWaitConditionUnset) {
+	if err := tab.Wait().Do(context.Background()); !errors.Is(err, errs.ErrWaitConditionUnset) {
 		t.Errorf("未指定条件时期望 ErrWaitConditionUnset，实际 %v", err)
 	}
 	// 元素级条件缺少元素必须被拦住（errElem 为 nil 表示「忘了给元素」）
-	if err := tab.Wait().Visible().Do(context.Background()); !errors.Is(err, ErrSelectorRequired) {
+	if err := tab.Wait().Visible().Do(context.Background()); !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Errorf("缺元素时期望 ErrSelectorRequired，实际 %v", err)
 	}
-	if err := tab.Wait().Text("x").Do(context.Background()); !errors.Is(err, ErrSelectorRequired) {
+	if err := tab.Wait().Text("x").Do(context.Background()); !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Errorf("Text 缺元素时期望 ErrSelectorRequired，实际 %v", err)
 	}
-	if err := tab.Wait().Count(3).Do(context.Background()); !errors.Is(err, ErrSelectorRequired) {
+	if err := tab.Wait().Count(3).Do(context.Background()); !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Errorf("Count 缺元素时期望 ErrSelectorRequired，实际 %v", err)
 	}
 
 	// 有了元素但选择器为空（EleCSS("")）同样要拦
-	if err := tab.Wait().Element(tab.EleCSS("")).Visible().Do(context.Background()); !errors.Is(err, ErrSelectorRequired) {
+	if err := tab.Wait().Element(tab.EleCSS("")).Visible().Do(context.Background()); !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Errorf("空 CSS 时期望 ErrSelectorRequired，实际 %v", err)
 	}
 
 	// el.Wait() 是元素级等待的主路径，同样走这套校验
-	if err := tab.EleCSS("").Wait().Visible().Do(context.Background()); !errors.Is(err, ErrSelectorRequired) {
+	if err := tab.EleCSS("").Wait().Visible().Do(context.Background()); !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Errorf("el.Wait() 空选择器时期望 ErrSelectorRequired，实际 %v", err)
 	}
 
 	// 元素级操作在空选择器下也必须报 ErrSelectorRequired，而不是发出无效 CDP 调用
-	if err := tab.EleCSS("").Click(context.Background()); !errors.Is(err, ErrSelectorRequired) {
+	if err := tab.EleCSS("").Click(context.Background()); !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Errorf("空选择器 Click 期望 ErrSelectorRequired，实际 %v", err)
 	}
-	if _, err := tab.EleID("").Text(context.Background()); !errors.Is(err, ErrSelectorRequired) {
+	if _, err := tab.EleID("").Text(context.Background()); !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Errorf("空选择器 Text 期望 ErrSelectorRequired，实际 %v", err)
 	}
 }
@@ -105,7 +103,7 @@ func TestWaitBuilderIndependentConditionsPassValidation(t *testing.T) {
 	cancel()
 
 	errURL := (&Tab{}).Wait().URL("x").Do(expired)
-	if errors.Is(errURL, ErrSelectorRequired) {
+	if errors.Is(errURL, errs.ErrSelectorRequired) {
 		t.Error("URL 条件不应要求选择器")
 	}
 	if errURL == nil {
@@ -113,7 +111,7 @@ func TestWaitBuilderIndependentConditionsPassValidation(t *testing.T) {
 	}
 
 	errReady := (&Tab{}).Wait().Ready().Do(expired)
-	if errors.Is(errReady, ErrSelectorRequired) {
+	if errors.Is(errReady, errs.ErrSelectorRequired) {
 		t.Error("Ready 条件不应要求选择器")
 	}
 	if errReady == nil {
@@ -229,11 +227,11 @@ func TestWaitFatalErr(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"空选择器（入参错，重试无意义）", fmt.Errorf("%w: 选择器为空（css）", ErrSelectorRequired), true},
-		{"连接已关闭", ErrClosed, true},
-		{"尚未连接", ErrNotConnected, true},
-		{"隔离上下文已关闭", ErrContextClosed, true},
-		{"元素还没出现（等待的目标，不能中止）", ErrElementNotFound, false},
+		{"空选择器（入参错，重试无意义）", fmt.Errorf("%w: 选择器为空（css）", errs.ErrSelectorRequired), true},
+		{"连接已关闭", errs.ErrClosed, true},
+		{"尚未连接", errs.ErrNotConnected, true},
+		{"隔离上下文已关闭", errs.ErrContextClosed, true},
+		{"元素还没出现（等待的目标，不能中止）", errs.ErrElementNotFound, false},
 		{"ctx 超时不算致命", fmt.Errorf("查询失败: %w", context.DeadlineExceeded), false},
 		{"导航期间的 CDP 报错不能中止", errors.New("Cannot find context with specified id"), false},
 	}
@@ -256,7 +254,7 @@ func TestWaitTextFailsFastOnEmptySelector(t *testing.T) {
 
 	start := time.Now()
 	err := el.WaitText(ctx, "任意")
-	if !errors.Is(err, ErrSelectorRequired) {
+	if !errors.Is(err, errs.ErrSelectorRequired) {
 		t.Fatalf("期望 ErrSelectorRequired，实际 %v", err)
 	}
 	if d := time.Since(start); d > 2*time.Second {
@@ -301,51 +299,5 @@ func TestSetTimeout(t *testing.T) {
 	tab.SetTimeout(-1)
 	if tab.timeout != 0 {
 		t.Errorf("负数应归零（关闭内置超时），实际 %v", tab.timeout)
-	}
-}
-
-// TestWithDefaultTimeoutOption 覆盖 Option 的默认取值与边界处理。
-func TestWithDefaultTimeoutOption(t *testing.T) {
-	o := config.Defaults()
-	if o.DefaultTimeout != config.DefaultTabTimeout {
-		t.Errorf("默认超时应为 %v，实际 %v", config.DefaultTabTimeout, o.DefaultTimeout)
-	}
-	if !o.AntiDetect {
-		t.Error("反检测应默认开启")
-	}
-
-	WithDefaultTimeout(0)(o)
-	if o.DefaultTimeout != 0 {
-		t.Errorf("传 0 应关闭内置超时，实际 %v", o.DefaultTimeout)
-	}
-	WithDefaultTimeout(-5 * time.Second)(o)
-	if o.DefaultTimeout != 0 {
-		t.Errorf("负数应归零，实际 %v", o.DefaultTimeout)
-	}
-	WithAntiDetect(false)(o)
-	if o.AntiDetect {
-		t.Error("WithAntiDetect(false) 未生效")
-	}
-}
-
-// TestWithChromePathExplicit 区分「未指定」与「显式指定」：
-// 显式指定一个不存在的路径时，必须报错而不是悄悄回退到自动发现。
-func TestWithChromePathExplicit(t *testing.T) {
-	o := config.Defaults()
-	if o.ChromePathSet {
-		t.Error("未调用 WithChromePath 时 chromePathSet 应为 false")
-	}
-
-	WithChromePath("  ")(o)
-	if o.ChromePathSet {
-		t.Error("空白路径不应被视为显式指定")
-	}
-
-	WithChromePath(filepath.Join(t.TempDir(), "not-exists.exe"))(o)
-	if !o.ChromePathSet {
-		t.Fatal("显式指定后 chromePathSet 应为 true")
-	}
-	if _, err := chrome.ResolveChromePath(o); err == nil {
-		t.Error("显式指定的路径不存在时应报错，不应静默回退到自动发现")
 	}
 }

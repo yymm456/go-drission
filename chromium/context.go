@@ -11,6 +11,7 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/internal/page"
 )
 
 // ContextOption 用于配置隔离上下文，等价于 CDP Target.createBrowserContext 的参数选项。
@@ -213,8 +214,8 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 	// 首次：消费创建上下文时预建的首个 target
 	if !bc.firstUsed {
 		bc.firstUsed = true
-		tab := bc.browser.newTabHandle(bc.firstTabCtx, bc.firstTargetID, bc.firstTabCancel)
-		tab.setURL("about:blank")
+		tab := page.NewTabHandle(bc.firstTabCtx, bc.firstTargetID, bc.firstTabCancel, bc.browser.opts)
+		page.SetTabURL(tab, "about:blank")
 		bc.tabs = append(bc.tabs, tab)
 		bc.applyAntiDetect(tab)
 		return tab, nil
@@ -240,8 +241,8 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 	if err != nil {
 		return nil, err
 	}
-	tab := bc.browser.newTabHandle(tabCtx, tid, cancel)
-	tab.setURL("about:blank")
+	tab := page.NewTabHandle(tabCtx, tid, cancel, bc.browser.opts)
+	page.SetTabURL(tab, "about:blank")
 	bc.tabs = append(bc.tabs, tab)
 	bc.applyAntiDetect(tab)
 	return tab, nil
@@ -252,7 +253,7 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 // 刻意不返回 error：注入反检测脚本属于增强能力，失败只告警、绝不让 NewTab 失败。
 // 否则使用者会因为「stealth 脚本没注入上」而完全拿不到标签页，得不偿失。
 func (bc *BrowserContext) applyAntiDetect(tab *Tab) {
-	if err := tab.ensureAntiDetect(tab.Ctx, bc.browser.opts); err != nil {
+	if err := page.InjectAntiDetect(tab.Ctx, tab, bc.browser.opts); err != nil {
 		bc.browser.opts.Logger.Warn("注入反检测脚本失败", "context", bc.name, "tab", tab.ID, "err", err)
 	}
 }
@@ -283,9 +284,7 @@ func (bc *BrowserContext) CloseTab(ctx context.Context, tab *Tab) {
 	})); err != nil {
 		bc.browser.opts.Logger.Warn("关闭隔离上下文内标签页失败", "context", bc.name, "tab", tab.ID, "err", err)
 	}
-	if tab.cancel != nil {
-		tab.cancel()
-	}
+	page.ReleaseTab(tab)
 	for i, t := range bc.tabs {
 		if t.ID == tab.ID {
 			bc.tabs = append(bc.tabs[:i], bc.tabs[i+1:]...)
@@ -313,9 +312,7 @@ func (bc *BrowserContext) Close() {
 
 	// 先释放各标签页的 chromedp 上下文
 	for _, t := range tabs {
-		if t.cancel != nil {
-			t.cancel()
-		}
+		page.ReleaseTab(t)
 	}
 	// 若首个 target 从未被 NewTab 消费，也要释放它的上下文
 	if !firstUsed && firstCancel != nil {

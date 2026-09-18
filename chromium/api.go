@@ -19,6 +19,7 @@ import (
 	"github.com/yymm456/go-drission/chromium/internal/cookie"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 	"github.com/yymm456/go-drission/chromium/internal/network"
+	"github.com/yymm456/go-drission/chromium/internal/page"
 )
 
 // Option 是函数式配置项
@@ -201,3 +202,72 @@ func RefreshChromePath() { chrome.RefreshChromePath() }
 // ParseCookiesJSON 解析 Cookie JSON（支持 chrome 扩展导出 / 本包与 session 包导出的格式）。
 // 顶层必须是数组；空内容返回空切片而不是错误。
 func ParseCookiesJSON(data []byte) ([]Cookie, error) { return cookie.ParseCookiesJSON(data) }
+
+// 以下是 S5 下沉到 internal/page 后需要门面转发的公开 API。
+//
+// 为什么这 6 个类型只能「别名 + 转发」、不能像别的包那样保留原方法：
+// Go 不允许给非本包定义的类型添加方法（cannot define new methods on non-local type），
+// 所以 Tab / Element / Frame / FrameElement / Selector / WaitBuilder 的**全部方法**
+// 必须一次性搬进 internal/page —— 这是 S5 无法再拆成多个可编译子步的根本原因。
+//
+// 别名化之后，这 6 个类型的字段与全部方法都会从 go doc 输出里消失，
+// 公开 API 闸门看不见它们，因此由 api_test.go 做编译期冻结（方法表达式 var 块）+ 反射冻结字段。
+
+// Tab 是一个被托管的标签页。
+//
+// 定义见 internal/page。所有 I/O 方法都接受调用方传入的 ctx（应从 Ctx 派生），
+// 由调用方控制超时与取消。
+type Tab = page.Tab
+
+// Element 是选择器定位到的单个元素。
+//
+// 定义见 internal/page。Element 不缓存 DOM 节点，每次操作都重新定位。
+type Element = page.Element
+
+// Frame 表示页面内的一个 iframe。
+//
+// 定义见 internal/page。导航或 iframe 重建后 Frame 会失效（ErrFrameDetached），
+// 需要重新用 Tab.Frame / FrameByURL / FrameByName 取。
+type Frame = page.Frame
+
+// FrameElement 是在 iframe 内部定位到的元素。
+//
+// 定义见 internal/page。
+type FrameElement = page.FrameElement
+
+// Selector 描述「怎么定位一个元素」。
+//
+// 定义见 internal/page。用 CSS / XPath / ID / JS 构造，不要直接构造结构体。
+type Selector = page.Selector
+
+// WaitBuilder 是链式等待条件构造器，由 Tab.Wait / Element.Wait 返回。
+//
+// 定义见 internal/page。必须指定条件后再 Do，否则返回 ErrWaitConditionUnset。
+type WaitBuilder = page.WaitBuilder
+
+// CSS 按 CSS 选择器定位（chromedp.ByQuery）。
+//
+//	chromium.CSS("div.item > a")
+//	chromium.CSS("#login")
+func CSS(sel string) Selector { return page.CSS(sel) }
+
+// XPath 按 XPath 表达式定位（chromedp.BySearch）。
+//
+//	chromium.XPath("//div[@class='item']/a")
+//	chromium.XPath("//button[text()='登录']")
+func XPath(expr string) Selector { return page.XPath(expr) }
+
+// ID 按元素 id 定位（chromedp.ByID），不需要写 '#' 前缀。
+//
+//	chromium.ID("username")
+func ID(id string) Selector { return page.ID(id) }
+
+// JS 直接用一段「返回 DOM 元素的 JS 表达式」定位（chromedp.ByJSPath）。
+//
+// 表达式会被交给 Runtime.evaluate 执行，因此必须是可信内容（不做任何转义）。
+// 它最大的用处是拿到其它三种方式都够不着的元素，典型是 Shadow DOM：
+//
+//	chromium.JS(`document.querySelector('#host').shadowRoot.querySelector('#inner')`)
+//
+// 注意：这只支持返回单个元素；要取多个请改用 CSS + 遍历。
+func JS(expr string) Selector { return page.JS(expr) }
