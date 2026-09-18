@@ -1,4 +1,4 @@
-package chromium
+package browser
 
 import (
 	"context"
@@ -55,7 +55,7 @@ type BrowserContext struct {
 
 	mu        sync.Mutex
 	firstUsed bool
-	tabs      []*Tab
+	tabs      []*page.Tab
 	closed    bool
 }
 
@@ -203,7 +203,7 @@ func (bc *BrowserContext) Name() string { return bc.name }
 // NewTab 在该隔离上下文内新建一个标签页并返回。
 // 首次调用复用创建上下文时预建的 target（那个新窗口）；之后每次调用都在同一上下文内新建标签页，
 // 落入首个窗口。返回的 *Tab 与 Browser 上的 Tab 用法完全一致（ctx 仍需从 tab.Ctx 派生）。
-func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
+func (bc *BrowserContext) NewTab(ctx context.Context) (*page.Tab, error) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
@@ -252,25 +252,25 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 //
 // 刻意不返回 error：注入反检测脚本属于增强能力，失败只告警、绝不让 NewTab 失败。
 // 否则使用者会因为「stealth 脚本没注入上」而完全拿不到标签页，得不偿失。
-func (bc *BrowserContext) applyAntiDetect(tab *Tab) {
+func (bc *BrowserContext) applyAntiDetect(tab *page.Tab) {
 	if err := page.InjectAntiDetect(tab.Ctx, tab, bc.browser.opts); err != nil {
 		bc.browser.opts.Logger.Warn("注入反检测脚本失败", "context", bc.name, "tab", tab.ID, "err", err)
 	}
 }
 
 // Tabs 返回该隔离上下文内当前托管的所有标签页。
-func (bc *BrowserContext) Tabs() []*Tab {
+func (bc *BrowserContext) Tabs() []*page.Tab {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	out := make([]*Tab, len(bc.tabs))
+	out := make([]*page.Tab, len(bc.tabs))
 	copy(out, bc.tabs)
 	return out
 }
 
 // CloseTab 关闭该上下文内的指定标签页。
 // 注意：关闭首个（新窗口）标签页可能连同窗口一起关掉，隔离上下文本身仍存活，可继续 NewTab。
-func (bc *BrowserContext) CloseTab(ctx context.Context, tab *Tab) {
+func (bc *BrowserContext) CloseTab(ctx context.Context, tab *page.Tab) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 

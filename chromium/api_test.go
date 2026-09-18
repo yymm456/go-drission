@@ -384,3 +384,64 @@ func TestPageFieldsAreFrozen(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// S6：Browser / BrowserContext 别名化后的冻结
+//
+// 与 S5 同一个病因：`type Browser = browser.Browser` 之后，这两个类型的字段与
+// 全部方法从 `go doc -all ./chromium` 里消失，公开 API 闸门看不见它们。
+//
+// 方法表达式 var 块把 17 个导出方法的签名冻在**编译期**：签名一改，本包就编译不过。
+// 这比反射严格 —— 反射查得到方法存在，查不出签名。
+//
+// 签名逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
+//
+// 注意 ContextOption：它在门面（本文件所在包）与 internal/browser 各声明一次，
+// 都是 chromedp.CreateBrowserContextOption 的别名，因此是同一个类型，
+// 方法签名里写 ContextOption 与写全名完全等价。
+
+// Browser 的 12 个导出方法签名。
+var (
+	_ func(*Browser)                                                                     = (*Browser).Close
+	_ func(*Browser, context.Context, *Tab)                                              = (*Browser).CloseTab
+	_ func(*Browser, context.Context) error                                              = (*Browser).Connect
+	_ func(*Browser, context.Context, string, ...ContextOption) (*BrowserContext, error) = (*Browser).Context
+	_ func(*Browser) []string                                                            = (*Browser).Contexts
+	_ func(*Browser, context.Context, int) (*Tab, error)                                 = (*Browser).GetTab
+	_ func(*Browser, context.Context, string) (*Tab, error)                              = (*Browser).GetTabByURL
+	_ func(*Browser, context.Context) (*Tab, error)                                      = (*Browser).LatestTab
+	_ func(*Browser, context.Context) (*Tab, error)                                      = (*Browser).NewTab
+	_ func(*Browser) int                                                                 = (*Browser).PID
+	_ func(*Browser) int                                                                 = (*Browser).Port
+	_ func(*Browser, context.Context) ([]*Tab, error)                                    = (*Browser).Tabs
+)
+
+// BrowserContext 的 5 个导出方法签名。
+var (
+	_ func(*BrowserContext)                                = (*BrowserContext).Close
+	_ func(*BrowserContext, context.Context, *Tab)         = (*BrowserContext).CloseTab
+	_ func(*BrowserContext) string                         = (*BrowserContext).Name
+	_ func(*BrowserContext, context.Context) (*Tab, error) = (*BrowserContext).NewTab
+	_ func(*BrowserContext) []*Tab                         = (*BrowserContext).Tabs
+)
+
+// TestBrowserFieldsAreFrozen 钉住 Browser / BrowserContext 的**导出字段数：必须是 0**。
+//
+// 这两个类型是「浏览器进程 + chromedp 连接」的门面，内部有 port / opts / rootCtx /
+// tabs / 三把锁等一大堆状态。任何一个变成导出字段，就等于把「连接怎么建、锁怎么加」
+// 变成了对外契约，将来想改并发模型就改不动了 —— 所以这里必须钉死 0。
+//
+// 反射的 NumField() 会把私有字段一起数进去，所以只数 IsExported() 的（同 §16.11）。
+func TestBrowserFieldsAreFrozen(t *testing.T) {
+	for name, rt := range map[string]reflect.Type{
+		"Browser":        reflect.TypeFor[Browser](),
+		"BrowserContext": reflect.TypeFor[BrowserContext](),
+	} {
+		for f := range rt.Fields() {
+			if f.IsExported() {
+				t.Errorf("%s 多了一个导出字段 %s（%s）：浏览器内部状态不该进入公开契约",
+					name, f.Name, f.Type)
+			}
+		}
+	}
+}

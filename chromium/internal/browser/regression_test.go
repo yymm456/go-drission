@@ -1,4 +1,4 @@
-package chromium
+package browser
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // ---------- 标签页上下文超时（BUG-07 的契约） ----------
@@ -87,12 +88,12 @@ func TestBoundedRootCtxNilSafe(t *testing.T) {
 // 而不是把 nil 上下文交给调用方去 panic。
 func TestConnectedRootCtxReportsState(t *testing.T) {
 	var b Browser
-	if _, err := b.connectedRootCtx(); !errors.Is(err, ErrNotConnected) {
+	if _, err := b.connectedRootCtx(); !errors.Is(err, errs.ErrNotConnected) {
 		t.Fatalf("未连接时应返回 ErrNotConnected，实际 %v", err)
 	}
 
 	b.closed = true
-	if _, err := b.connectedRootCtx(); !errors.Is(err, ErrClosed) {
+	if _, err := b.connectedRootCtx(); !errors.Is(err, errs.ErrClosed) {
 		t.Fatalf("已关闭时应返回 ErrClosed，实际 %v", err)
 	}
 }

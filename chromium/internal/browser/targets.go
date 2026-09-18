@@ -1,4 +1,4 @@
-package chromium
+package browser
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func (b *Browser) listTargets(ctx context.Context) ([]targetInfo, error) {
 //
 // 内部按「锁内读状态 → 锁外做 I/O → 锁内写状态」三段式组织，
 // 附着外部标签页（一次 chromedp 往返）全部发生在锁外。
-func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, error) {
+func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*page.Tab, error) {
 	alive := make(map[target.ID]string, len(infos))
 	for _, info := range infos {
 		if info.Type == "page" {
@@ -87,13 +87,13 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 
 	// 第一段：锁内只做状态读写——摘掉已消失的标签页、刷新已知标签页的 URL、
 	// 记下需要新附着的外部 target。
-	known := make(map[target.ID]*Tab, len(b.tabs))
+	known := make(map[target.ID]*page.Tab, len(b.tabs))
 	var pending []target.ID
 	func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 
-		kept := make([]*Tab, 0, len(b.tabs))
+		kept := make([]*page.Tab, 0, len(b.tabs))
 		for _, t := range b.tabs {
 			url, ok := alive[t.ID]
 			if !ok {
@@ -118,7 +118,7 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 	}()
 
 	// 第二段：锁外附着新增的外部标签页。
-	attached := make([]*Tab, 0, len(pending))
+	attached := make([]*page.Tab, 0, len(pending))
 	for _, id := range pending {
 		tab, err := b.attachTarget(ctx, id, alive[id])
 		if err != nil {
@@ -140,7 +140,7 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 	// 所持有的 chromedp 会话此后没有任何人会 cancel，要等 Browser.Close 才回收。
 	// 让位的一方把自己的那份释放掉，并把 known 指向已登记的那条，
 	// 这样本次返回值依然完整。
-	byID := make(map[target.ID]*Tab, len(b.tabs))
+	byID := make(map[target.ID]*page.Tab, len(b.tabs))
 	for _, t := range b.tabs {
 		byID[t.ID] = t
 	}
@@ -155,7 +155,7 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 		known[tab.ID] = tab
 	}
 
-	result := make([]*Tab, 0, len(alive))
+	result := make([]*page.Tab, 0, len(alive))
 	for _, info := range infos {
 		if info.Type != "page" {
 			continue
@@ -180,7 +180,7 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 // attach 这一步必须带超时：tabCtx 继承自无 deadline 的 rootCtx，直接 Run(tabCtx)
 // 会让这里的 Tabs() 在 Chrome 假死时永久挂起，调用方的 ctx 形同虚设（历史缺陷 BUG-07）。
 // 注意超时只能加在「等待预算」上，见 tabInitBudget 的说明。
-func (b *Browser) attachTarget(ctx context.Context, id target.ID, url string) (*Tab, error) {
+func (b *Browser) attachTarget(ctx context.Context, id target.ID, url string) (*page.Tab, error) {
 	// 派生 tab 上下文并完成 attach；首次 Run 与超时预算的细节见 newTabCtx。
 	tabCtx, cancel, err := b.newTabCtx(ctx, chromedp.WithTargetID(id))
 	if err != nil {

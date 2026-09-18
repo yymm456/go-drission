@@ -1,4 +1,4 @@
-package chromium
+package browser
 
 import (
 	"context"
@@ -60,7 +60,7 @@ type Browser struct {
 	closed                  bool
 
 	mu   sync.Mutex
-	tabs []*Tab
+	tabs []*page.Tab
 
 	// targetListMu 串行「一切会拿着 target 快照去改动 b.tabs 的操作」：
 	// NewTab 的「建 target → 比对前后快照定位新 ID → 登记」，以及 Tabs 的
@@ -121,7 +121,7 @@ func (b *Browser) ensureConnected() error {
 
 // NewBrowser 创建 Browser
 // port 传 0 表示随机端口，传具体值表示固定端口
-func NewBrowser(port int, opts ...Option) *Browser {
+func NewBrowser(port int, opts ...config.Option) *Browser {
 	o := config.Defaults()
 	for _, opt := range opts {
 		opt(o)
@@ -457,7 +457,7 @@ func (b *Browser) guard() error {
 // 「取快照 + 同步」整体与 NewTab 互斥（targetListMu）：syncTabs 会把不在快照里的
 // 标签页 cancel 掉，而 cancel 等于 CloseTarget；不互斥的话，一次 Tabs() 就可能
 // 把并发新建的标签页真的关掉。详见 targetListMu 字段的注释。
-func (b *Browser) Tabs(ctx context.Context) ([]*Tab, error) {
+func (b *Browser) Tabs(ctx context.Context) ([]*page.Tab, error) {
 	if err := b.guard(); err != nil {
 		return nil, err
 	}
@@ -480,7 +480,7 @@ func (b *Browser) Tabs(ctx context.Context) ([]*Tab, error) {
 // 认成自己的，而且 Tabs() 还会拿旧快照把刚建好的 target 当成已关闭取消掉
 // （cancel == CloseTarget）。因此用 targetListMu 保护——它不保护 b.tabs 的状态
 // （那是 mu 的职责），所以不会和 GetTab 之类只读 b.tabs 的路径争锁。
-func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
+func (b *Browser) NewTab(ctx context.Context) (*page.Tab, error) {
 	b.targetListMu.Lock()
 	defer b.targetListMu.Unlock()
 
@@ -526,7 +526,7 @@ func (b *Browser) NewTab(ctx context.Context) (*Tab, error) {
 }
 
 // GetTab 返回指定索引的标签页
-func (b *Browser) GetTab(ctx context.Context, index int) (*Tab, error) {
+func (b *Browser) GetTab(ctx context.Context, index int) (*page.Tab, error) {
 	tabs, err := b.Tabs(ctx)
 	if err != nil {
 		return nil, err
@@ -538,7 +538,7 @@ func (b *Browser) GetTab(ctx context.Context, index int) (*Tab, error) {
 }
 
 // GetTabByURL 按 URL 包含关系查找标签页
-func (b *Browser) GetTabByURL(ctx context.Context, substr string) (*Tab, error) {
+func (b *Browser) GetTabByURL(ctx context.Context, substr string) (*page.Tab, error) {
 	tabs, err := b.Tabs(ctx)
 	if err != nil {
 		return nil, err
@@ -552,7 +552,7 @@ func (b *Browser) GetTabByURL(ctx context.Context, substr string) (*Tab, error) 
 }
 
 // LatestTab 返回最后打开的标签页
-func (b *Browser) LatestTab(ctx context.Context) (*Tab, error) {
+func (b *Browser) LatestTab(ctx context.Context) (*page.Tab, error) {
 	tabs, err := b.Tabs(ctx)
 	if err != nil {
 		return nil, err
@@ -564,7 +564,7 @@ func (b *Browser) LatestTab(ctx context.Context) (*Tab, error) {
 }
 
 // CloseTab 显式关闭某个标签页
-func (b *Browser) CloseTab(ctx context.Context, tab *Tab) {
+func (b *Browser) CloseTab(ctx context.Context, tab *page.Tab) {
 	if tab == nil {
 		return
 	}
@@ -684,7 +684,7 @@ func (b *Browser) Close() {
 // OpenPage 创建并连接浏览器，返回一个可用标签页
 // port 传 0 表示随机端口，传具体值表示固定端口
 // 无论是新启动还是接管已有 Chrome，都优先复用最近打开的标签页，没有则新建一个
-func OpenPage(ctx context.Context, port int, opts ...Option) (*Browser, *Tab, error) {
+func OpenPage(ctx context.Context, port int, opts ...config.Option) (*Browser, *page.Tab, error) {
 	b := NewBrowser(port, opts...)
 	if err := b.Connect(ctx); err != nil {
 		b.Close() // 连接失败也要清理：若已启动 Chrome 则结束进程，避免汄漏僵尸实例
@@ -724,13 +724,13 @@ func OpenPage(ctx context.Context, port int, opts ...Option) (*Browser, *Tab, er
 // 只在锁内挑出 keep 之外的标签页，真正的关闭与「从 b.tabs 摘除」都交给 CloseTab：
 // 那套「CloseTarget + cancel + 从 b.tabs 摘除」已经有一份实现，不在别处重写。
 // 因此这里不再写回 b.tabs——写回是多余的，CloseTab 随即又会逐个摘掉。
-func (b *Browser) closeOtherTabs(ctx context.Context, keep *Tab) {
+func (b *Browser) closeOtherTabs(ctx context.Context, keep *page.Tab) {
 	if keep == nil {
 		return
 	}
 
 	b.mu.Lock()
-	others := make([]*Tab, 0, len(b.tabs))
+	others := make([]*page.Tab, 0, len(b.tabs))
 	for _, t := range b.tabs {
 		if t.ID != keep.ID {
 			others = append(others, t)

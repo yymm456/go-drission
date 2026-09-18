@@ -11,9 +11,12 @@ package chromium
 // 本文件里的别名与转发只是「对外契约」，不承担逻辑。
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
+	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/browser"
 	"github.com/yymm456/go-drission/chromium/internal/chrome"
 	"github.com/yymm456/go-drission/chromium/internal/config"
 	"github.com/yymm456/go-drission/chromium/internal/cookie"
@@ -271,3 +274,48 @@ func ID(id string) Selector { return page.ID(id) }
 //
 // 注意：这只支持返回单个元素；要取多个请改用 CSS + 遍历。
 func JS(expr string) Selector { return page.JS(expr) }
+
+// 以下是 S6 下沉到 internal/browser 后需要门面转发的公开 API。
+//
+// 与 S5 同一个语言事实：Go 不允许给非本包定义的类型添加方法
+// （cannot define new methods on non-local type），所以 Browser / BrowserContext 的
+// **全部方法**必须一次性搬进 internal/browser —— 这是 S6 也是原子步的原因。
+//
+// 别名化之后，这两个类型的字段与全部方法都会从 go doc 输出里消失，
+// 公开 API 闸门看不见它们，因此由 api_test.go 做编译期冻结（方法表达式 var 块）+ 反射冻结字段。
+
+// ContextOption 是创建隔离上下文时的可选项。
+//
+// 它是上游 chromedp.CreateBrowserContextOption 的别名，与 internal/browser 里的
+// 同名声明指向同一个类型（两处各声明一次，是为了让门面的公开签名与实现包的签名
+// 各自都可读写，而不是靠一次声明跨包引用）。
+type ContextOption = chromedp.CreateBrowserContextOption
+
+// Browser 是一个被托管的浏览器实例：一个 Chrome 进程 + 一个共享的 chromedp 连接。
+//
+// 定义见 internal/browser。典型用法是 OpenPage 一次拿到 Browser 与首个 Tab，
+// 之后用 NewTab / GetTab / LatestTab 取标签页，用完 Close。
+type Browser = browser.Browser
+
+// BrowserContext 是一个命名的隔离上下文（CDP 的 BrowserContext）。
+//
+// 定义见 internal/browser。同一个 Browser 下的多个上下文之间 Cookie / 存储完全隔离，
+// 比各起一个 Chrome 进程轻量得多，适合多账户场景。
+type BrowserContext = browser.BrowserContext
+
+// NewBrowser 创建一个 Browser，但**不立即连接/启动**浏览器。
+//
+// port 为调试端口；opts 为配置项（见各 WithXxx）。随后调用 Connect 真正建连。
+func NewBrowser(port int, opts ...Option) *Browser { return browser.NewBrowser(port, opts...) }
+
+// OpenPage 一步到位：连上（必要时启动）指定端口的浏览器，并返回首个可用标签页。
+//
+// 这是最常用的入口。返回的 Browser 与 Tab 都由调用方负责关闭（defer b.Close()）。
+func OpenPage(ctx context.Context, port int, opts ...Option) (*Browser, *Tab, error) {
+	return browser.OpenPage(ctx, port, opts...)
+}
+
+// WithContextProxy 为隔离上下文指定独立代理，仅在上下文首次创建时生效。
+//
+//	chromium.WithContextProxy("http://127.0.0.1:7891")
+func WithContextProxy(proxy string) ContextOption { return browser.WithContextProxy(proxy) }
