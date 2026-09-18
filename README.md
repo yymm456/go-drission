@@ -112,7 +112,11 @@ tab.EleID("kw").SetValue(ctx, "golang")
 tab.EleJS(`document.querySelector('my-widget').shadowRoot.querySelector('button')`).Click(ctx)
 ```
 
-> 传空选择器（`tab.EleCSS("")`）会返回 `ErrSelectorRequired`，不会静默定位到 `<html>`。
+> `JS()` 的表达式会被原样交给 `Runtime.evaluate` 执行（**不做任何转义**），只能传可信内容，
+> 不要把未净化的外部输入拼进去；而且它只返回**单个元素**，要取多个请改用 CSS + 遍历。
+>
+> 传空选择器（`tab.EleCSS("")`，或只有空白的 `tab.EleCSS("   ")`）会返回 `ErrSelectorRequired`，
+> 既不会静默定位到 `<html>`，也不会把底层那句 `'   ' is not a valid selector` 抛给你。
 > 找不到元素统一返回 `ErrElementNotFound`（用 `errors.Is` 判断），不会抛裸的
 > `context deadline exceeded`。
 
