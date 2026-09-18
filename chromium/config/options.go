@@ -31,7 +31,7 @@ type Options struct {
 	Lang           string // --lang，影响 Accept-Language 与 navigator.language
 	Headless       bool
 	WindowSize     string
-	AntiDetect     bool          // 是否启用反自动化检测（默认开）
+	AntiDetect     bool          // 是否启用反自动化检测（默认关）
 	DefaultTimeout time.Duration // Tab 操作的默认超时，0 表示不自动加超时
 	ConnectTimeout time.Duration
 	ExtraFlags     []FlagPair   // 自定义启动参数
@@ -60,7 +60,7 @@ func Defaults() *Options {
 		WindowSize: "1920,1080",
 		// 默认中文环境：影响 Accept-Language 与 navigator.language
 		Lang:           "zh-CN",
-		AntiDetect:     true,
+		AntiDetect:     false,
 		DefaultTimeout: DefaultTabTimeout,
 		ConnectTimeout: 10 * time.Second,
 		// 默认丢弃所有日志：库不应擅自向 stdout/stderr 打印，避免污染调用方输出

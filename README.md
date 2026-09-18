@@ -409,21 +409,21 @@ tab.Wait().Ready().Do(ctx)
 
 ### 配置项 Option
 
-| 函数 | 说明 |
-|---|---|
-| `WithChromePath(path)` | 浏览器可执行文件路径；不指定时自动在本机查找（见「浏览器自动发现」） |
-| `WithUserDataDir(dir)` | 用户数据目录（持久化登录态）。显式指定后，接管固定端口时会校验归属（见「固定端口接管校验」） |
-| `WithTrustExistingBrowser()` | 关闭固定端口的接管校验，无条件接管端口上的浏览器 |
-| `WithUserAgent(ua)` | User-Agent |
-| `WithProxy(proxy)` | 代理，如 `http://127.0.0.1:7890` |
-| `WithHeadless(bool)` | 无头模式 |
-| `WithWindowSize(size)` | 窗口大小，如 `1920,1080` |
-| `WithConnectTimeout(d)` | 连接握手超时（ctx 无 deadline 时的默认值，默认 10s） |
+| 函数 | 说明                                                  |
+|---|-----------------------------------------------------|
+| `WithChromePath(path)` | 浏览器可执行文件路径；不指定时自动在本机查找（见「浏览器自动发现」）                  |
+| `WithUserDataDir(dir)` | 用户数据目录（持久化登录态）。显式指定后，接管固定端口时会校验归属（见「固定端口接管校验」）      |
+| `WithTrustExistingBrowser()` | 关闭固定端口的接管校验，无条件接管端口上的浏览器                            |
+| `WithUserAgent(ua)` | User-Agent                                          |
+| `WithProxy(proxy)` | 代理，如 `http://127.0.0.1:7890`                        |
+| `WithHeadless(bool)` | 无头模式                                                |
+| `WithWindowSize(size)` | 窗口大小，如 `1920,1080`                                  |
+| `WithConnectTimeout(d)` | 连接握手超时（ctx 无 deadline 时的默认值，默认 10s）                 |
 | `WithDefaultTimeout(d)` | Tab 操作的默认超时（默认 30s，传 0 关闭）；仅在调用方 ctx 无 deadline 时兜底 |
-| `WithAntiDetect(bool)` | 反自动化检测（默认开），见「反检测」 |
-| `WithLang(lang)` | 浏览器语言 `--lang`（默认 `zh-CN`），传空则不添加 |
-| `WithFlag(name, value)` | 自定义 Chrome 启动参数 |
-| `WithLogger(l)` | 库内部日志（`*slog.Logger`）；默认静默，传入即输出连接/启动等信息 |
+| `WithAntiDetect(bool)` | 反自动化检测（默认关闭），见「反检测」                                 |
+| `WithLang(lang)` | 浏览器语言 `--lang`（默认 `zh-CN`），传空则不添加                   |
+| `WithFlag(name, value)` | 自定义 Chrome 启动参数                                     |
+| `WithLogger(l)` | 库内部日志（`*slog.Logger`）；默认静默，传入即输出连接/启动等信息            |
 
 ---
 
@@ -657,7 +657,7 @@ chromium.OpenPage(ctx, 9222, chromium.WithTrustExistingBrowser())
 
 ## 反检测
 
-默认开启（`WithAntiDetect(true)`），做两件事：
+默认关闭（`WithAntiDetect(true)`），做两件事：
 
 1. **启动参数**：追加 `--disable-blink-features=AutomationControlled`、`--excludeSwitches=enable-automation`、
    `--disable-infobars`、`--mute-audio`，去掉「正受到自动测试软件的控制」提示条及其来源。
@@ -666,8 +666,8 @@ chromium.OpenPage(ctx, 9222, chromium.WithTrustExistingBrowser())
    `navigator.plugins`、`navigator.languages`。注入幂等，重复获取同一标签页不会叠加脚本。
 
 ```go
-// 关掉反检测（比如要做指纹对比实验，需要干净原生 Chrome）
-chromium.OpenPage(ctx, 9222, chromium.WithAntiDetect(false))
+// 开启反检测（默认关闭，需要时显式打开）
+chromium.OpenPage(ctx, 9222, chromium.WithAntiDetect(true))
 ```
 
 只做「低风险高收益」的部分：WebGL / Canvas / 字体指纹伪造副作用大、容易误伤正常页面，

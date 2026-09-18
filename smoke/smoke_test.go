@@ -761,8 +761,30 @@ func TestSessionSaveFile(t *testing.T) {
 // ---------------------------------------------------------------- 回归
 
 func TestAntiDetect(t *testing.T) {
-	_, tab := setup(t)
 	srv := startServers(t)
+
+	// 反检测**默认关闭**，所以这里必须显式 WithAntiDetect(true)，
+	// 并且要起独立实例：setup() 的共享浏览器是按默认配置建的，
+	// 拿它来断言反检测必然失败（它的 navigator.webdriver 就是原生的 true）。
+	dir := t.TempDir()
+	bootCtx, cancelBoot := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancelBoot()
+
+	b, tab, err := chromium.OpenPage(bootCtx, 0,
+		chromium.WithUserDataDir(dir),
+		chromium.WithHeadless(true),
+		chromium.WithDefaultTimeout(15*time.Second),
+		chromium.WithFlag("no-proxy-server", ""),
+		chromium.WithAntiDetect(true),
+	)
+	if err != nil {
+		if errors.Is(err, chromium.ErrChromeNotFound) {
+			t.Skipf("本机没有可用浏览器，跳过：%v", err)
+		}
+		t.Fatalf("启动（开启反检测的）浏览器失败：%v", err)
+	}
+	t.Cleanup(b.Close)
+
 	gotoMain(t, tab, srv)
 	ctx := ctxOf(t, tab, 15*time.Second)
 
@@ -779,6 +801,31 @@ func TestAntiDetect(t *testing.T) {
 	if err != nil || hasChrome != "object" {
 		t.Fatalf("window.chrome 缺失：got=%v err=%v", hasChrome, err)
 	}
+}
+
+// TestAntiDetectDisabledByDefault 钉住「反检测默认关闭」这条默认值。
+//
+// 默认值是最容易在重构里被静默翻转的东西：改错了不会有编译错误，
+// 也不会影响任何显式传参的用例。这里用共享实例（它就是按默认配置建的）
+// 反向确认 navigator.webdriver 保持原生的 true。
+func TestAntiDetectDisabledByDefault(t *testing.T) {
+	_, tab := setup(t)
+	srv := startServers(t)
+	gotoMain(t, tab, srv)
+	ctx := ctxOf(t, tab, 15*time.Second)
+
+	wd, err := tab.Eval(ctx, `navigator.webdriver`)
+	if err != nil {
+		t.Fatalf("读取 navigator.webdriver 失败：%v", err)
+	}
+	// 判据只能是「有没有被抹成 undefined」，不能对具体布尔值下断言：
+	// 反检测开启时该属性被删成 undefined（经 JSON 变 null）；未开启时保持原生值，
+	// 而原生值随 Chrome 版本与 headless 模式而变 —— 本机实测新版 headless 下是 false，
+	// 不是旧文献里常写的 true。
+	if wd == nil {
+		t.Fatalf("反检测默认应为关闭，但 navigator.webdriver 已被抹成 undefined")
+	}
+	t.Logf("默认配置下 navigator.webdriver = %v（原生值，未被抹除）", wd)
 }
 
 func TestTitleAndURL(t *testing.T) {

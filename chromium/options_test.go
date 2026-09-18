@@ -15,8 +15,8 @@ func TestWithDefaultTimeoutOption(t *testing.T) {
 	if o.DefaultTimeout != config.DefaultTabTimeout {
 		t.Errorf("默认超时应为 %v，实际 %v", config.DefaultTabTimeout, o.DefaultTimeout)
 	}
-	if !o.AntiDetect {
-		t.Error("反检测应默认开启")
+	if o.AntiDetect {
+		t.Error("反检测应默认关闭")
 	}
 
 	WithDefaultTimeout(0)(o)

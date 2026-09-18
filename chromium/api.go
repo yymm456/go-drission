@@ -137,11 +137,11 @@ func WithHeadless(headless bool) Option { return config.WithHeadless(headless) }
 // 影响请求头 Accept-Language 与 navigator.language。传空字符串则不添加该参数。
 func WithLang(lang string) Option { return config.WithLang(lang) }
 
-// WithAntiDetect 是否启用反自动化检测（默认开启）。
+// WithAntiDetect 是否启用反自动化检测（默认关闭）。
 //
 // 开启后追加 --disable-blink-features=AutomationControlled 等启动参数，并在每个新建标签页注入
-// 初始化脚本把 navigator.webdriver 抹成 undefined。这些处理会改变浏览器指纹，若需「干净原生 Chrome」
-// （如指纹对比实验），传 false 关闭。
+// 初始化脚本把 navigator.webdriver 抹成 undefined。这些处理会改变浏览器指纹特征，
+// 因此默认不启用 —— 需要时显式传 true。
 func WithAntiDetect(enable bool) Option { return config.WithAntiDetect(enable) }
 
 // WithDefaultTimeout 设置 Tab 操作的默认超时（默认 30s）。
