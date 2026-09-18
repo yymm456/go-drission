@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chromedp/cdproto/cdp"
+	cdproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
 )
 
@@ -98,7 +98,7 @@ func (e *Element) String() string {
 
 // node 重新查询一次并返回第一个匹配节点。
 // 所有节点级操作（ClickJS / SetValue / Eval）都经由它，因此天然不缓存。
-func (e *Element) node(ctx context.Context) (*cdp.Node, error) {
+func (e *Element) node(ctx context.Context) (*cdproto.Node, error) {
 	return e.tab.firstNode(ctx, e.sel)
 }
 

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/yymm456/go-drission/chromium/internal/cdp"
 )
 
 // ---------- Cookie 校验 ----------
@@ -129,28 +131,28 @@ func TestTabInitBudgetRespectsCallerDeadline(t *testing.T) {
 	if !ok {
 		t.Fatal("调用方 ctx 无 deadline 时应套上默认超时")
 	}
-	if d := time.Until(dl2); d > defaultCDPTimeout {
-		t.Fatalf("兜底超时不应超过 %v，实际 %v", defaultCDPTimeout, d)
+	if d := time.Until(dl2); d > cdp.DefaultCallTimeout {
+		t.Fatalf("兜底超时不应超过 %v，实际 %v", cdp.DefaultCallTimeout, d)
 	}
 }
 
 // TestBudgetDurationClampsToCallerDeadline 直接守住两个入口共用的那条超时算法。
 //
-// budgetDuration 是 boundedRootCtx 与 tabInitBudget 的唯一算法来源，抽出来就必须能
+// cdp.BudgetDuration 是 boundedRootCtx 与 tabInitBudget 的唯一算法来源，抽出来就必须能
 // 单独钉住。只测 tabInitBudget 的派生 deadline 是不够的：它的父 ctx 就是入参 ctx，
 // 而 context.WithTimeout 会对父 ctx 的 deadline 再取一次 min，因此哪怕
-// budgetDuration 退化成「永远返回 defaultCDPTimeout」，tabInitBudget 的结果也是对的。
+// cdp.BudgetDuration 退化成「永远返回 cdp.DefaultCallTimeout」，tabInitBudget 的结果也是对的。
 // 真正依赖裁剪的是 boundedRootCtx——它的父是（无 deadline 的）rootCtx，只有
-// budgetDuration 自己收紧了才会尊重调用方的 deadline。
+// cdp.BudgetDuration 自己收紧了才会尊重调用方的 deadline。
 func TestBudgetDurationClampsToCallerDeadline(t *testing.T) {
 	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelShort()
-	if d := budgetDuration(short); d > time.Second {
+	if d := cdp.BudgetDuration(short); d > time.Second {
 		t.Fatalf("应采纳调用方更短的 deadline，实际 %v", d)
 	}
 
-	if d := budgetDuration(context.Background()); d != defaultCDPTimeout {
-		t.Fatalf("调用方无 deadline 时应返回默认超时 %v，实际 %v", defaultCDPTimeout, d)
+	if d := cdp.BudgetDuration(context.Background()); d != cdp.DefaultCallTimeout {
+		t.Fatalf("调用方无 deadline 时应返回默认超时 %v，实际 %v", cdp.DefaultCallTimeout, d)
 	}
 }
 
@@ -188,7 +190,7 @@ func TestConnectedRootCtxReportsState(t *testing.T) {
 // TestDisposeBrowserContextNilRootCtxNoPanic 守住 teardown 路径上的空指针。
 //
 // rootCtx 为 nil 时（并发 Close 刚把它置 nil），disposeBrowserContext 会走进
-// withDefaultTimeout(nil, ...) —— 它的 nil 分支原样返回 nil —— 紧接着
+// cdp.WithDefaultTimeout(nil, ...) —— 它的 nil 分支原样返回 nil —— 紧接着
 // chromedp.Run(nil, ...) 会在 chromedp.FromContext 里对 nil 接口调 ctx.Value，
 // 直接 panic：
 //

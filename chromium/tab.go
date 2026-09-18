@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/cdproto/cdp"
+	cdproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/cdp"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // discardLogger 是 Tab 未配置 logger 时的兜底：丢弃所有日志，不污染调用方输出。
@@ -95,7 +98,7 @@ func (t *Tab) SetTimeout(d time.Duration) {
 
 // applyTimeout 在 ctx 无 deadline 时套用标签页内置超时。
 //
-// 取 t.timeout 需要加锁，真正的判定交给 withDefaultTimeout，避免「不覆盖调用方 deadline」
+// 取 t.timeout 需要加锁，真正的判定交给 cdp.WithDefaultTimeout，避免「不覆盖调用方 deadline」
 // 这条规则在两个地方各写一遍。
 // 返回的 cancel 必须由调用方 defer 调用。
 func (t *Tab) applyTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -103,7 +106,7 @@ func (t *Tab) applyTimeout(ctx context.Context) (context.Context, context.Cancel
 	timeout := t.timeout
 	t.mu.RUnlock()
 
-	return withDefaultTimeout(ctx, timeout)
+	return cdp.WithDefaultTimeout(ctx, timeout)
 }
 
 // safeCtx 对调用方误传「裸 context」（不含 chromedp 路由信息）时的兜底：
@@ -115,7 +118,7 @@ func (t *Tab) applyTimeout(ctx context.Context) (context.Context, context.Cancel
 func (t *Tab) safeCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	if chromedp.FromContext(ctx) == nil {
 		if t.Ctx == nil {
-			return ctx, noopCancel
+			return ctx, cdp.NoopCancel
 		}
 		if dl, ok := ctx.Deadline(); ok {
 			// 父上下文只能是 t.Ctx：chromedp 的路由信息挂在 t.Ctx 这条链上，
@@ -211,10 +214,10 @@ const waitPollInterval = 200 * time.Millisecond
 // 会先撞上校验）；其余三个同属「连接已经没了」这一类，一并留在这里是为了让判定规则只有
 // 一处，而不是等它们真的可达时再补。四条分支都有 TestWaitFatalErr 覆盖。
 func waitFatalErr(err error) bool {
-	return errors.Is(err, ErrSelectorRequired) ||
-		errors.Is(err, ErrClosed) ||
-		errors.Is(err, ErrNotConnected) ||
-		errors.Is(err, ErrContextClosed)
+	return errors.Is(err, errs.ErrSelectorRequired) ||
+		errors.Is(err, errs.ErrClosed) ||
+		errors.Is(err, errs.ErrNotConnected) ||
+		errors.Is(err, errs.ErrContextClosed)
 }
 
 // waitRecordErr 记下轮询期间最后一次「非 ctx 终止」的错误。
@@ -270,7 +273,7 @@ func pollWait(ctx context.Context, what string, notFound bool, probe func() (boo
 		case <-ctx.Done():
 			timeoutErr := waitTimeoutErr(what, ctx.Err(), lastErr)
 			if notFound {
-				return fmt.Errorf("%w: %w", ErrElementNotFound, timeoutErr)
+				return fmt.Errorf("%w: %w", errs.ErrElementNotFound, timeoutErr)
 			}
 			return timeoutErr
 		case <-ticker.C:
@@ -318,7 +321,7 @@ func (t *Tab) BringToFront(ctx context.Context) error {
 func (t *Tab) WindowID(ctx context.Context) (int64, error) {
 	var wid int64
 	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		bexec := cdproto.WithExecutor(c, chromedp.FromContext(c).Browser)
 		id, _, e := browser.GetWindowForTarget().WithTargetID(t.ID).Do(bexec)
 		if e != nil {
 			return e
@@ -332,11 +335,11 @@ func (t *Tab) WindowID(ctx context.Context) (int64, error) {
 // ---------- 节点级操作（ClickJS / SetValue 的公共基础）----------
 
 // nodes 按选择器取回全部匹配节点。
-func (t *Tab) nodes(ctx context.Context, sel Selector) ([]*cdp.Node, error) {
+func (t *Tab) nodes(ctx context.Context, sel Selector) ([]*cdproto.Node, error) {
 	if err := sel.validate(); err != nil {
 		return nil, err
 	}
-	var nodes []*cdp.Node
+	var nodes []*cdproto.Node
 	err := t.run(ctx, chromedp.Nodes(sel.expr, &nodes, sel.options()...))
 	return nodes, err
 }
@@ -361,7 +364,7 @@ func wrapNotFound(err error, sel Selector) error {
 // 调用方就会看到「同一个错误两种写法」。标签页侧（firstNode）与框架侧
 // （FrameElement.Text）都走这里。
 func noMatchError(sel Selector) error {
-	return fmt.Errorf("%w: %s=%q", ErrElementNotFound, sel.Mode(), sel.String())
+	return fmt.Errorf("%w: %s=%q", errs.ErrElementNotFound, sel.Mode(), sel.String())
 }
 
 // notFoundError 把「选择器没命中」的底层错误统一包装成 ErrElementNotFound（附选择器与原因）。
@@ -377,7 +380,7 @@ func notFoundError(sel Selector, err error) error {
 
 // firstNode 取第一个匹配节点；没有匹配时返回 ErrElementNotFound，
 // 而不是让调用方拿到空切片后下标越界。
-func (t *Tab) firstNode(ctx context.Context, sel Selector) (*cdp.Node, error) {
+func (t *Tab) firstNode(ctx context.Context, sel Selector) (*cdproto.Node, error) {
 	nodes, err := t.nodes(ctx, sel)
 	if err != nil {
 		// 与 wrapNotFound 共用 notFoundError：包成 ErrElementNotFound，
@@ -396,7 +399,7 @@ func (t *Tab) firstNode(ctx context.Context, sel Selector) (*cdp.Node, error) {
 //
 // 走 dom.resolveNode + runtime.callFunctionOn 而不是拼字符串 querySelector，
 // 这样 XPath / JS path 这类无法用 CSS 表达的选择器也能一致地参与 JS 类操作。
-func (t *Tab) evalOnNode(ctx context.Context, node *cdp.Node, fn string) (any, error) {
+func (t *Tab) evalOnNode(ctx context.Context, node *cdproto.Node, fn string) (any, error) {
 	var res any
 	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 		obj, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(c)
@@ -414,26 +417,12 @@ func (t *Tab) evalOnNode(ctx context.Context, node *cdp.Node, fn string) (any, e
 			return err
 		}
 		if exception != nil {
-			return fmt.Errorf("节点上执行 JS 失败: %s", exceptionText(exception))
+			return fmt.Errorf("节点上执行 JS 失败: %s", cdp.ExceptionText(exception))
 		}
-		res = decodeRemoteValue(result)
+		res = cdp.DecodeRemoteValue(result)
 		return nil
 	}))
 	return res, err
-}
-
-// exceptionText 把 CDP 异常详情转成可读字符串。
-func exceptionText(e *runtime.ExceptionDetails) string {
-	if e == nil {
-		return ""
-	}
-	if e.Exception != nil && e.Exception.Description != "" {
-		return e.Exception.Description
-	}
-	if e.Text != "" {
-		return e.Text
-	}
-	return "未知异常"
 }
 
 // ---------- 截图 ----------
@@ -444,7 +433,7 @@ func (t *Tab) Screenshot(ctx context.Context, path string) error {
 	if err := t.run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
 		return err
 	}
-	return writeFile(path, buf)
+	return os.WriteFile(path, buf, 0o644)
 }
 
 // Reload 重新加载当前页面

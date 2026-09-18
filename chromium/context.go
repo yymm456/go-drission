@@ -6,9 +6,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chromedp/cdproto/cdp"
+	cdproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/cdp"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // ContextOption 用于配置隔离上下文，等价于 CDP Target.createBrowserContext 的参数选项。
@@ -42,7 +44,7 @@ type BrowserContext struct {
 	browser *Browser
 
 	// bcID 是 CDP Target.createBrowserContext 返回的隔离上下文 ID。
-	bcID cdp.BrowserContextID
+	bcID cdproto.BrowserContextID
 
 	// 首个 target：创建上下文时用 newWindow=true 预先建好（Chrome 要求首个 target 必须开新窗口），
 	// NewTab 首次调用时消费它。
@@ -90,12 +92,12 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 	// 手动创建隔离 browser context，并在其中开首个 target（必须 newWindow=true）。
 	// browser 级 CDP 调用用 boundedRootCtx 约束：既保留 browser 路由，又受调用方 ctx
 	// 取消/超时保护，Chrome 无响应时不会永久阻塞。
-	var bcID cdp.BrowserContextID
+	var bcID cdproto.BrowserContextID
 	var firstID target.ID
 	runCtx, cancelRun := b.boundedRootCtx(ctx)
 	defer cancelRun()
 	err = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		bexec := cdproto.WithExecutor(c, chromedp.FromContext(c).Browser)
 
 		p := target.CreateBrowserContext()
 		for _, o := range opts {
@@ -124,7 +126,7 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 
 	// attach 一个 chromedp 上下文到首个 target，作为该上下文的根标签页。
 	//
-	// 走 newTabCtx 而不是就地手写 NewContext + tabInitBudget + runAbandonable：
+	// 走 newTabCtx 而不是就地手写 NewContext + tabInitBudget + cdp.RunAbandonable：
 	// 首次 attach 的超时约束（见 BUG-07）与 Browser.NewTab 是同一条规则，
 	// 抄第二遍迟早会漏。ctx 只约束「等待预算」，Run 仍跑在长命的 tab 上下文上，
 	// Chrome 无响应时不会把调用方永久挂住，也不会掐断 target 的事件分发 goroutine。
@@ -145,12 +147,12 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 		firstTabCancel: firstCancel,
 	}
 	b.contexts[name] = bc
-	b.opts.logger.Info("已创建隔离上下文", "name", name, "browserContextID", string(bcID))
+	b.opts.Logger.Info("已创建隔离上下文", "name", name, "browserContextID", string(bcID))
 	return bc, nil
 }
 
 // disposeBrowserContext 在 browser 级连接上销毁指定的 CDP 隔离上下文。
-func (b *Browser) disposeBrowserContext(bcID cdp.BrowserContextID) {
+func (b *Browser) disposeBrowserContext(bcID cdproto.BrowserContextID) {
 	if bcID == "" {
 		return
 	}
@@ -158,7 +160,7 @@ func (b *Browser) disposeBrowserContext(bcID cdp.BrowserContextID) {
 	// 这个 CDP 上下文随整条连接一起消失，既没有可用的 browser executor 可发 dispose，
 	// 也没必要再发。少了这一步的后果是**真实 panic**，已有调用栈复现（rootCtx==nil 即可稳定触发）：
 	//
-	//	withDefaultTimeout(nil, ...) 的 nil 分支原样返回 nil
+	//	cdp.WithDefaultTimeout(nil, ...) 的 nil 分支原样返回 nil
 	//	→ chromedp.Run(nil, ...)
 	//	→ chromedp.FromContext(nil) 对 nil 接口调 ctx.Value
 	//	→ panic: invalid memory address or nil pointer dereference
@@ -174,10 +176,10 @@ func (b *Browser) disposeBrowserContext(bcID cdp.BrowserContextID) {
 		return
 	}
 	// teardown 无调用方 ctx，套用默认超时，避免 Chrome 无响应时 Close 永久阻塞。
-	runCtx, cancel := withDefaultTimeout(rootCtx, defaultCDPTimeout)
+	runCtx, cancel := cdp.WithDefaultTimeout(rootCtx, cdp.DefaultCallTimeout)
 	defer cancel()
 	_ = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		bexec := cdproto.WithExecutor(c, chromedp.FromContext(c).Browser)
 		return target.DisposeBrowserContext(bcID).Do(bexec)
 	}))
 }
@@ -205,7 +207,7 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 	defer bc.mu.Unlock()
 
 	if bc.closed {
-		return nil, fmt.Errorf("%w: %s", ErrContextClosed, bc.name)
+		return nil, fmt.Errorf("%w: %s", errs.ErrContextClosed, bc.name)
 	}
 
 	// 首次：消费创建上下文时预建的首个 target
@@ -224,7 +226,7 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 	runCtx, cancelRun := bc.browser.boundedRootCtx(ctx)
 	defer cancelRun()
 	err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		bexec := cdproto.WithExecutor(c, chromedp.FromContext(c).Browser)
 		t, e := target.CreateTarget("about:blank").WithBrowserContextID(bc.bcID).Do(bexec)
 		tid = t
 		return e
@@ -251,7 +253,7 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 // 否则使用者会因为「stealth 脚本没注入上」而完全拿不到标签页，得不偿失。
 func (bc *BrowserContext) applyAntiDetect(tab *Tab) {
 	if err := tab.ensureAntiDetect(tab.Ctx, bc.browser.opts); err != nil {
-		bc.browser.opts.logger.Warn("注入反检测脚本失败", "context", bc.name, "tab", tab.ID, "err", err)
+		bc.browser.opts.Logger.Warn("注入反检测脚本失败", "context", bc.name, "tab", tab.ID, "err", err)
 	}
 }
 
@@ -276,10 +278,10 @@ func (bc *BrowserContext) CloseTab(ctx context.Context, tab *Tab) {
 	runCtx, cancelRun := bc.browser.boundedRootCtx(ctx)
 	defer cancelRun()
 	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		bexec := cdproto.WithExecutor(c, chromedp.FromContext(c).Browser)
 		return target.CloseTarget(tab.ID).Do(bexec)
 	})); err != nil {
-		bc.browser.opts.logger.Warn("关闭隔离上下文内标签页失败", "context", bc.name, "tab", tab.ID, "err", err)
+		bc.browser.opts.Logger.Warn("关闭隔离上下文内标签页失败", "context", bc.name, "tab", tab.ID, "err", err)
 	}
 	if tab.cancel != nil {
 		tab.cancel()
@@ -322,7 +324,7 @@ func (bc *BrowserContext) Close() {
 	// dispose 整个隔离上下文（关闭其下所有 target 与全部 Cookie）
 	b.disposeBrowserContext(bcID)
 	b.removeContext(bc.name)
-	b.opts.logger.Info("已销毁隔离上下文", "name", bc.name)
+	b.opts.Logger.Info("已销毁隔离上下文", "name", bc.name)
 }
 
 // isClosed 返回上下文是否已关闭（内部复用判断用）。

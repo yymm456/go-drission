@@ -10,6 +10,7 @@ import (
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // Record 一条完整的请求/响应记录
@@ -164,7 +165,7 @@ func (l *Listener) Start(ctx context.Context) error {
 	l.mu.Lock()
 	if l.started {
 		l.mu.Unlock()
-		return ErrListenerStarted
+		return errs.ErrListenerStarted
 	}
 	l.ctx, l.cancel = context.WithCancel(ctx)
 	l.started = true
@@ -181,7 +182,7 @@ func (l *Listener) Start(ctx context.Context) error {
 		if cancel != nil {
 			cancel()
 		}
-		return ErrInvalidContext
+		return errs.ErrInvalidContext
 	}
 
 	chromedp.ListenTarget(l.ctx, func(ev any) {

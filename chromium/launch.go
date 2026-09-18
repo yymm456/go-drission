@@ -12,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yymm456/go-drission/chromium/internal/config"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // noProxyTransport 是绕过系统代理的 HTTP transport。
@@ -73,12 +76,12 @@ func isPortAlive(ctx context.Context, port int) bool {
 // 规则：调用方用 WithChromePath 显式指定时，路径不存在就直接报错（不悄悄回退，
 // 否则拼写错误会被静默掩盖）；未指定时才走自动发现，找不到则连同搜索过的
 // 全部位置一起返回，方便调用方一眼看出该装到哪。
-func resolveChromePath(o *options) (string, error) {
-	if o.chromePathSet {
-		if !fileExists(o.chromePath) {
-			return "", fmt.Errorf("chromium: WithChromePath 指定的浏览器不存在: %s", o.chromePath)
+func resolveChromePath(o *config.Options) (string, error) {
+	if o.ChromePathSet {
+		if !fileExists(o.ChromePath) {
+			return "", fmt.Errorf("chromium: WithChromePath 指定的浏览器不存在: %s", o.ChromePath)
 		}
-		return o.chromePath, nil
+		return o.ChromePath, nil
 	}
 	if p := findChrome(); p != "" {
 		return p, nil
@@ -86,15 +89,15 @@ func resolveChromePath(o *options) (string, error) {
 	tried := SearchedChromePaths()
 	return "", fmt.Errorf("%w：已搜索 %d 个位置:\n  %s\n"+
 		"请用 WithChromePath(\"<实际路径>\") 显式指定",
-		ErrChromeNotFound, len(tried), strings.Join(tried, "\n  "))
+		errs.ErrChromeNotFound, len(tried), strings.Join(tried, "\n  "))
 }
 
 // launchChrome 启动 Chrome，应用全部配置项，返回 exec.Cmd 以便调用方跟踪进程。
 // ctx 控制「等待调试端口就绪」这一阶段：ctx 取消/到期即放弃等待并杀掉已启动的进程。
-func launchChrome(ctx context.Context, port int, o *options) (*exec.Cmd, error) {
+func launchChrome(ctx context.Context, port int, o *config.Options) (*exec.Cmd, error) {
 	args := []string{
 		fmt.Sprintf("--remote-debugging-port=%d", port),
-		"--user-data-dir=" + o.userDataDir,
+		"--user-data-dir=" + o.UserDataDir,
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--noerrdialogs", // 自动化场景不弹模态错误框（如数据目录占用），失败统一走返回错误
@@ -107,7 +110,7 @@ func launchChrome(ctx context.Context, port int, o *options) (*exec.Cmd, error) 
 	// 服务器/容器上 /dev/shm 通常只有 64MB，不加这条 Chrome 会随机崩溃
 	args = append(args, "--disable-dev-shm-usage")
 
-	if o.antiDetect {
+	if o.AntiDetect {
 		// 抹掉最明显的自动化痕迹：
 		//   --disable-blink-features=AutomationControlled  去掉 navigator.webdriver 的底层标记来源
 		//   --excludeSwitches=enable-automation            去掉「正受到自动测试软件的控制」提示条
@@ -119,27 +122,27 @@ func launchChrome(ctx context.Context, port int, o *options) (*exec.Cmd, error) 
 			"--mute-audio",
 		)
 	}
-	if o.lang != "" {
-		args = append(args, "--lang="+o.lang)
+	if o.Lang != "" {
+		args = append(args, "--lang="+o.Lang)
 	}
-	if o.headless {
+	if o.Headless {
 		args = append(args, "--headless=new")
 	}
-	if o.windowSize != "" {
-		args = append(args, "--window-size="+o.windowSize)
+	if o.WindowSize != "" {
+		args = append(args, "--window-size="+o.WindowSize)
 	}
-	if o.userAgent != "" {
-		args = append(args, "--user-agent="+o.userAgent)
+	if o.UserAgent != "" {
+		args = append(args, "--user-agent="+o.UserAgent)
 	}
-	if o.proxy != "" {
-		args = append(args, "--proxy-server="+o.proxy)
+	if o.Proxy != "" {
+		args = append(args, "--proxy-server="+o.Proxy)
 	}
 	// 追加自定义启动参数
-	for _, f := range o.extraFlags {
-		if f.value == "" {
-			args = append(args, "--"+f.name)
+	for _, f := range o.ExtraFlags {
+		if f.Value == "" {
+			args = append(args, "--"+f.Name)
 		} else {
-			args = append(args, "--"+f.name+"="+f.value)
+			args = append(args, "--"+f.Name+"="+f.Value)
 		}
 	}
 
@@ -159,7 +162,7 @@ func launchChrome(ctx context.Context, port int, o *options) (*exec.Cmd, error) 
 
 	// 等待调试端口就绪：受 ctx 与 connectTimeout 双重约束，取先到者。
 	// 首次启动全新用户数据目录时 Chrome 冷启动较慢，可通过 WithConnectTimeout 放大。
-	timeout := o.connectTimeout
+	timeout := o.ConnectTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}

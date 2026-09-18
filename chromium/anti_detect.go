@@ -5,6 +5,8 @@ import (
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/cdp"
+	"github.com/yymm456/go-drission/chromium/internal/config"
 )
 
 // antiDetectScript 在文档创建后、页面自身脚本执行前注入（Page.addScriptToEvaluateOnNewDocument），
@@ -45,7 +47,7 @@ const antiDetectScript = `(function () {
 // 两条并发路径可能同时读到 false 并各注入一次，幂等就名存实亡。这个锁是标签页
 // 私有的（不像 Browser.mu 是全局的），持锁期间只做一次很短的 CDP 调用，
 // 不会像 CODE_REVIEW 2.3 那样把全局锁压在网络 I/O 上。
-func (t *Tab) ensureAntiDetect(ctx context.Context, o *options) error {
+func (t *Tab) ensureAntiDetect(ctx context.Context, o *config.Options) error {
 	if t == nil {
 		return nil
 	}
@@ -66,15 +68,15 @@ func (t *Tab) ensureAntiDetect(ctx context.Context, o *options) error {
 //
 // 未开启反检测（WithAntiDetect(false)）时直接跳过，不做任何 CDP 调用。
 // 注入失败只返回错误由调用方决定是否告警——这属于增强能力，不该拖垮主流程。
-func injectAntiDetect(ctx context.Context, o *options) error {
-	if o == nil || !o.antiDetect {
+func injectAntiDetect(ctx context.Context, o *config.Options) error {
+	if o == nil || !o.AntiDetect {
 		return nil
 	}
 	if ctx == nil {
 		return nil
 	}
 
-	runCtx, cancel := withDefaultTimeout(ctx, defaultCDPTimeout)
+	runCtx, cancel := cdp.WithDefaultTimeout(ctx, cdp.DefaultCallTimeout)
 	defer cancel()
 
 	return chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {

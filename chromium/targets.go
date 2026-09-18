@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/chromedp/cdproto/cdp"
+	cdproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -40,7 +40,7 @@ func (b *Browser) listTargets(ctx context.Context) ([]targetInfo, error) {
 
 	var infos []*target.Info
 	err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		bexec := cdproto.WithExecutor(c, chromedp.FromContext(c).Browser)
 		var e error
 		infos, e = target.GetTargets().Do(bexec)
 		return e
@@ -123,7 +123,7 @@ func (b *Browser) syncTabs(ctx context.Context, infos []targetInfo) ([]*Tab, err
 		tab, err := b.attachTarget(ctx, id, alive[id])
 		if err != nil {
 			// 该 target 无法附加（可能正在关闭），跳过而不是让整次同步失败
-			b.opts.logger.Warn("附加外部标签页失败", "id", id, "err", err)
+			b.opts.Logger.Warn("附加外部标签页失败", "id", id, "err", err)
 			continue
 		}
 		attached = append(attached, tab)

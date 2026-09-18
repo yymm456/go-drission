@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
+	cdproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // Cookie 描述一个要注入的 Cookie。
@@ -50,7 +51,7 @@ func ParseCookiesJSON(data []byte) ([]Cookie, error) {
 	}
 	var out []Cookie
 	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidCookieJSON, err)
+		return nil, fmt.Errorf("%w: %w", errs.ErrInvalidCookieJSON, err)
 	}
 	return out, nil
 }
@@ -64,18 +65,18 @@ func ParseCookiesJSON(data []byte) ([]Cookie, error) {
 // SameSite=None 却没有 Secure。
 func validateCookie(c Cookie, idx int) error {
 	if strings.TrimSpace(c.Name) == "" {
-		return fmt.Errorf("%w: 第 %d 条缺少 name", ErrInvalidCookie, idx)
+		return fmt.Errorf("%w: 第 %d 条缺少 name", errs.ErrInvalidCookie, idx)
 	}
 	if strings.TrimSpace(c.Domain) == "" {
 		return fmt.Errorf("%w: Cookie %q 缺少 domain（CDP 需要 domain 或 url 才能落盘）",
-			ErrInvalidCookie, c.Name)
+			errs.ErrInvalidCookie, c.Name)
 	}
 	// Chrome 依 RFC 6265bis 直接丢弃「SameSite=None 但没有 Secure」的 Cookie，
 	// 但 Network.setCookie 本身不报错——库若照旧返回成功，调用方拿到的是
 	// 「全部注入成功」的假象，登录态却少了几条。这里提前拦成显式错误。
 	if strings.EqualFold(strings.TrimSpace(c.SameSite), "None") && !c.Secure {
 		return fmt.Errorf("%w: Cookie %q 的 SameSite=None 必须带 Secure（浏览器会拒收）",
-			ErrInvalidCookie, c.Name)
+			errs.ErrInvalidCookie, c.Name)
 	}
 	return nil
 }
@@ -89,11 +90,11 @@ func cookiePath(c Cookie) string {
 }
 
 // cookieExpires 把 Cookie.Expires（Unix 秒）转成 CDP 时间戳；<= 0 表示会话 Cookie，返回 nil。
-func cookieExpires(c Cookie) *cdp.TimeSinceEpoch {
+func cookieExpires(c Cookie) *cdproto.TimeSinceEpoch {
 	if c.Expires <= 0 {
 		return nil
 	}
-	exp := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
+	exp := cdproto.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
 	return &exp
 }
 
@@ -178,7 +179,7 @@ func (t *Tab) SetCookies(ctx context.Context, cookies []Cookie) error {
 //	tab.LoginWithCookies(ctx, "https://site.com/home", sess.Jar())
 func (t *Tab) ImportCookiesSource(ctx context.Context, src CookieSource) (int, error) {
 	if src == nil {
-		return 0, fmt.Errorf("%w: CookieSource 为 nil", ErrInvalidCookie)
+		return 0, fmt.Errorf("%w: CookieSource 为 nil", errs.ErrInvalidCookie)
 	}
 	data, err := src.ExportJSON()
 	if err != nil {
@@ -223,14 +224,14 @@ func (t *Tab) LoginWithCookies(ctx context.Context, rawURL string, src CookieSou
 // 适合「从文件/网络读到的登录态」这种没有 CookieSource 对象的场景。
 func (t *Tab) LoginWithCookiesJSON(ctx context.Context, rawURL string, data []byte) error {
 	if !hasHTTPScheme(rawURL) {
-		return fmt.Errorf("%w: %q（需要形如 https://host/path 的绝对地址）", ErrEmptyURL, rawURL)
+		return fmt.Errorf("%w: %q（需要形如 https://host/path 的绝对地址）", errs.ErrEmptyURL, rawURL)
 	}
 	cookies, err := ParseCookiesJSON(data)
 	if err != nil {
 		return err
 	}
 	if len(cookies) == 0 {
-		return fmt.Errorf("%w: Cookie 列表为空，无法免登录", ErrInvalidCookie)
+		return fmt.Errorf("%w: Cookie 列表为空，无法免登录", errs.ErrInvalidCookie)
 	}
 	if err := t.SetCookies(ctx, cookies); err != nil {
 		return fmt.Errorf("注入 Cookie 失败: %w", err)

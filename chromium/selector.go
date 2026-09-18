@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // 选择器模式，决定底层用哪条 CDP 定位路径。
@@ -88,7 +89,7 @@ func (s Selector) Empty() bool { return strings.TrimSpace(s.expr) == "" }
 // ErrSelectorRequired，调用方用 errors.Is 就能判断。
 func (s Selector) validate() error {
 	if s.Empty() {
-		return fmt.Errorf("%w: 选择器为空（%s）", ErrSelectorRequired, s.Mode())
+		return fmt.Errorf("%w: 选择器为空（%s）", errs.ErrSelectorRequired, s.Mode())
 	}
 	return nil
 }

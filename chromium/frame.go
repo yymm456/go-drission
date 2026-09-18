@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chromedp/cdproto/cdp"
+	cdproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/cdp"
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // Frame 代表页面里的一个 iframe（框架）。
@@ -28,7 +30,7 @@ import (
 // （选择器 / URL / name）自动重新定位一次，重新定位也失败才返回 ErrFrameDetached。
 // 框架内的元素操作走 FrameElement（由 Frame.Ele* 返回），都是 JS 语义：Click 走 el.click()，不做可见性检查。
 type Frame struct {
-	id      cdp.FrameID
+	id      cdproto.FrameID
 	url     string
 	name    string
 	parent  *Tab
@@ -47,7 +49,7 @@ type frameLocator struct {
 }
 
 // ID 返回该框架的 CDP 框架 ID。
-func (f *Frame) ID() cdp.FrameID { return f.id }
+func (f *Frame) ID() cdproto.FrameID { return f.id }
 
 // URL 返回该框架当前的地址（构造时的快照，导航后会变，请用 URLNow 重新获取）。
 func (f *Frame) URL() string { return f.url }
@@ -59,10 +61,10 @@ func (f *Frame) Name() string { return f.name }
 
 // frameInfo 是打平后的框架信息。
 type frameInfo struct {
-	ID       cdp.FrameID
+	ID       cdproto.FrameID
 	URL      string
 	Name     string
-	ParentID cdp.FrameID
+	ParentID cdproto.FrameID
 }
 
 // flattenFrames 把嵌套的框架树摊平成一维列表。
@@ -90,7 +92,7 @@ func (t *Tab) Frames(ctx context.Context) ([]*Frame, error) {
 
 	var out []*Frame
 	for _, info := range infos {
-		if info.ID == cdp.FrameID("") {
+		if info.ID == cdproto.FrameID("") {
 			continue
 		}
 		f, err := t.bindFrame(ctx, info, frameLocator{name: info.Name, urlSub: info.URL})
@@ -104,7 +106,7 @@ func (t *Tab) Frames(ctx context.Context) ([]*Frame, error) {
 	if len(out) == 0 {
 		// 与 FrameByURL / FrameByName 保持一致：找不到就报哨兵错误，
 		// 而不是返回空切片让调用方去猜「到底是没有 iframe 还是查询失败」。
-		return nil, ErrFrameNotFound
+		return nil, errs.ErrFrameNotFound
 	}
 	return out, nil
 }
@@ -170,7 +172,7 @@ func (t *Tab) Frame(ctx context.Context, sel Selector) (*Frame, error) {
 		return nil, err
 	}
 	if len(infos) == 0 {
-		return nil, fmt.Errorf("%w: 当前页面没有 iframe", ErrFrameNotFound)
+		return nil, fmt.Errorf("%w: 当前页面没有 iframe", errs.ErrFrameNotFound)
 	}
 
 	var target *frameInfo
@@ -194,7 +196,7 @@ func (t *Tab) Frame(ctx context.Context, sel Selector) (*Frame, error) {
 		return nil, err
 	}
 	if target == nil {
-		return nil, fmt.Errorf("%w: 选择器 %s=%q 未指向任何 iframe", ErrFrameNotFound, sel.Mode(), sel.String())
+		return nil, fmt.Errorf("%w: 选择器 %s=%q 未指向任何 iframe", errs.ErrFrameNotFound, sel.Mode(), sel.String())
 	}
 	return t.bindFrame(ctx, *target, frameLocator{selector: sel, hasSel: true})
 }
@@ -217,7 +219,7 @@ func (t *Tab) findFrame(ctx context.Context, loc frameLocator, matcher func(fram
 			return t.bindFrame(ctx, info, loc)
 		}
 	}
-	return nil, fmt.Errorf("%w: %s", ErrFrameNotFound, errMsg)
+	return nil, fmt.Errorf("%w: %s", errs.ErrFrameNotFound, errMsg)
 }
 
 // FrameByURL 按 URL 子串查找框架，取第一个匹配的。
@@ -265,9 +267,9 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 			if exception != nil {
 				// 用哨兵包一层：调用方能用 errors.Is 判断是脚本报错而非环境问题，
 				// 上层的重试逻辑也据此拒绝重试。
-				return fmt.Errorf("%w: %s", errFrameScript, exceptionText(exception))
+				return fmt.Errorf("%w: %s", errs.ErrFrameScript, cdp.ExceptionText(exception))
 			}
-			res = decodeRemoteValue(v)
+			res = cdp.DecodeRemoteValue(v)
 			return nil
 		}))
 	}
@@ -276,7 +278,7 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 	if err == nil {
 		return res, nil
 	}
-	if errors.Is(err, errFrameScript) {
+	if errors.Is(err, errs.ErrFrameScript) {
 		return nil, err // 脚本自己出错，重试无意义且会重复副作用
 	}
 	// world 失效的第一种情况：框架还在，只是 execution context 被换了
@@ -289,7 +291,7 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 	if e := f.relocate(ctx); e == nil {
 		return res, run(f.worldID)
 	}
-	return nil, fmt.Errorf("%w（原始错误：%w）", ErrFrameDetached, err)
+	return nil, fmt.Errorf("%w（原始错误：%w）", errs.ErrFrameDetached, err)
 }
 
 // relocate 按当初的定位依据重新定位框架，成功后把新框架的 id / url / worldID 吸收进来。
@@ -298,7 +300,7 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 // 全部失败返回 ErrFrameDetached。
 func (f *Frame) relocate(ctx context.Context) error {
 	if f.parent == nil {
-		return ErrFrameDetached
+		return errs.ErrFrameDetached
 	}
 
 	newFrame := func() (*Frame, error) {
@@ -320,7 +322,7 @@ func (f *Frame) relocate(ctx context.Context) error {
 				return f.parent.bindFrame(ctx, info, f.locator)
 			}
 		}
-		return nil, fmt.Errorf("%w: frameID=%s 已不在框架树中", ErrFrameNotFound, f.id)
+		return nil, fmt.Errorf("%w: frameID=%s 已不在框架树中", errs.ErrFrameNotFound, f.id)
 	}
 
 	nf, err := newFrame()
@@ -341,7 +343,7 @@ func (f *Frame) recreateWorld(ctx context.Context) (runtime.ExecutionContextID, 
 
 // createIsolatedWorld 在指定框架里建立一个 isolated world，返回其 execution context ID。
 // bindFrame 与 recreateWorld 共用同一段 CDP 调用（同一个操作的两种时机）。
-func (t *Tab) createIsolatedWorld(ctx context.Context, id cdp.FrameID) (runtime.ExecutionContextID, error) {
+func (t *Tab) createIsolatedWorld(ctx context.Context, id cdproto.FrameID) (runtime.ExecutionContextID, error) {
 	var worldID runtime.ExecutionContextID
 	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 		res, e := page.CreateIsolatedWorld(id).
@@ -388,7 +390,7 @@ func (f *Frame) requireExpr(sel Selector) (string, error) {
 	}
 	expr := sel.jsExpr()
 	if expr == "" {
-		return "", fmt.Errorf("%w: %s=%q", ErrSelectorRequired, sel.Mode(), sel.String())
+		return "", fmt.Errorf("%w: %s=%q", errs.ErrSelectorRequired, sel.Mode(), sel.String())
 	}
 	return expr, nil
 }
@@ -400,7 +402,7 @@ func frameOpResult(v any, action string, sel Selector) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %s %s=%q（框架内脚本返回 %v）",
-		ErrElementNotFound, action, sel.Mode(), sel.String(), v)
+		errs.ErrElementNotFound, action, sel.Mode(), sel.String(), v)
 }
 
 // Navigate 让框架跳转到指定地址。

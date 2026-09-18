@@ -3,6 +3,8 @@ package chromium
 import (
 	"context"
 	"time"
+
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // waitCond 表示 WaitBuilder 的等待条件类型
@@ -121,13 +123,13 @@ func (w *WaitBuilder) Do(ctx context.Context) error {
 	switch w.cond {
 	case condVisible, condPresent, condText, condCount:
 		if w.el == nil {
-			return ErrSelectorRequired
+			return errs.ErrSelectorRequired
 		}
 		if err := w.el.sel.validate(); err != nil {
 			return err
 		}
 	case condUnset:
-		return ErrWaitConditionUnset
+		return errs.ErrWaitConditionUnset
 	default:
 		// condReady / condURL 为页面级条件，无需元素，校验通过
 	}
@@ -153,6 +155,6 @@ func (w *WaitBuilder) Do(ctx context.Context) error {
 	case condCount:
 		return w.tab.waitElementCount(runCtx, w.el.sel, w.count)
 	default:
-		return ErrWaitConditionUnset
+		return errs.ErrWaitConditionUnset
 	}
 }

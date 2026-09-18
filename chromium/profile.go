@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // Profile 代表一个命名的浏览器档案：独立的用户数据目录 + 独立端口，
@@ -133,7 +135,7 @@ func (pm *ProfileManager) Open(ctx context.Context, name string) (*Browser, *Tab
 	pm.mu.Lock()
 	if pm.closed {
 		pm.mu.Unlock()
-		return nil, nil, fmt.Errorf("%w，无法再打开 Profile", ErrProfileClosed)
+		return nil, nil, fmt.Errorf("%w，无法再打开 Profile", errs.ErrProfileClosed)
 	}
 	if p, ok := pm.profiles[name]; ok && p.browser != nil {
 		browser := p.browser
@@ -157,7 +159,7 @@ func (pm *ProfileManager) Open(ctx context.Context, name string) (*Browser, *Tab
 	if pm.closed {
 		pm.mu.Unlock()
 		pm.releasePort(port)
-		return nil, nil, fmt.Errorf("%w，无法再打开 Profile", ErrProfileClosed)
+		return nil, nil, fmt.Errorf("%w，无法再打开 Profile", errs.ErrProfileClosed)
 	}
 	if p, ok := pm.profiles[name]; ok && p.browser != nil {
 		browser := p.browser

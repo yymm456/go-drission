@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // 档案标记文件：写在用户数据目录里，记录「本库在这个目录里、用哪个端口启动过 Chrome」。
@@ -84,16 +86,16 @@ func readProfileMarker(dir string) (profileMarker, bool) {
 // 想无条件跳过请用 WithTrustExistingBrowser。
 func (b *Browser) verifyPortOwner() error {
 	o := b.opts
-	if o.trustExistingBrowser {
+	if o.TrustExistingBrowser {
 		return nil
 	}
 
-	dir := o.userDataDir
+	dir := o.UserDataDir
 	marker, ok := readProfileMarker(dir)
 
 	switch {
 	case ok && marker.Port == b.port:
-		o.logger.Info("已核实端口上的 Chrome 属于本档案", "port", b.port, "dir", dir)
+		o.Logger.Info("已核实端口上的 Chrome 属于本档案", "port", b.port, "dir", dir)
 		return nil
 
 	case ok && marker.Port != b.port:
@@ -101,19 +103,19 @@ func (b *Browser) verifyPortOwner() error {
 			"%w：用户数据目录 %s 的档案标记记录的是端口 %d，但本次要连接的是端口 %d。"+
 				"这个端口上的浏览器很可能属于别的档案（或别的程序）。"+
 				"确认要接管请改端口，或加 WithTrustExistingBrowser() 显式跳过核实",
-			ErrBrowserMismatch, dir, marker.Port, b.port)
+			errs.ErrBrowserMismatch, dir, marker.Port, b.port)
 
-	case o.userDataDirSet:
+	case o.UserDataDirSet:
 		return fmt.Errorf(
 			"%w：你指定了 WithUserDataDir(%q)，但该目录里没有本库写入的档案标记，"+
 				"因此无法确认端口 %d 上的浏览器真的在用它。"+
 				"若那是你手动启动的 Chrome 且确定就是它，加 WithTrustExistingBrowser() 跳过核实",
-			ErrBrowserMismatch, dir, b.port)
+			errs.ErrBrowserMismatch, dir, b.port)
 
 	default:
 		// 默认临时目录 + 无标记：接管对象本就无法确定，但这是「连上我自己那个 9222」
 		// 的常见用法，不能因为核实不了就报错，只把风险讲清楚。
-		o.logger.Warn("端口上已有 Chrome 且无法核实其用户数据目录，将直接接管",
+		o.Logger.Warn("端口上已有 Chrome 且无法核实其用户数据目录，将直接接管",
 			"port", b.port, "expectedDir", dir)
 		return nil
 	}

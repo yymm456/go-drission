@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/config"
 )
 
 // TestWaitBuilderValidation 覆盖等待条件的参数校验：
@@ -304,24 +305,24 @@ func TestSetTimeout(t *testing.T) {
 
 // TestWithDefaultTimeoutOption 覆盖 Option 的默认取值与边界处理。
 func TestWithDefaultTimeoutOption(t *testing.T) {
-	o := defaultOptions()
-	if o.defaultTimeout != defaultTimeout {
-		t.Errorf("默认超时应为 %v，实际 %v", defaultTimeout, o.defaultTimeout)
+	o := config.Defaults()
+	if o.DefaultTimeout != config.DefaultTabTimeout {
+		t.Errorf("默认超时应为 %v，实际 %v", config.DefaultTabTimeout, o.DefaultTimeout)
 	}
-	if !o.antiDetect {
+	if !o.AntiDetect {
 		t.Error("反检测应默认开启")
 	}
 
 	WithDefaultTimeout(0)(o)
-	if o.defaultTimeout != 0 {
-		t.Errorf("传 0 应关闭内置超时，实际 %v", o.defaultTimeout)
+	if o.DefaultTimeout != 0 {
+		t.Errorf("传 0 应关闭内置超时，实际 %v", o.DefaultTimeout)
 	}
 	WithDefaultTimeout(-5 * time.Second)(o)
-	if o.defaultTimeout != 0 {
-		t.Errorf("负数应归零，实际 %v", o.defaultTimeout)
+	if o.DefaultTimeout != 0 {
+		t.Errorf("负数应归零，实际 %v", o.DefaultTimeout)
 	}
 	WithAntiDetect(false)(o)
-	if o.antiDetect {
+	if o.AntiDetect {
 		t.Error("WithAntiDetect(false) 未生效")
 	}
 }
@@ -329,18 +330,18 @@ func TestWithDefaultTimeoutOption(t *testing.T) {
 // TestWithChromePathExplicit 区分「未指定」与「显式指定」：
 // 显式指定一个不存在的路径时，必须报错而不是悄悄回退到自动发现。
 func TestWithChromePathExplicit(t *testing.T) {
-	o := defaultOptions()
-	if o.chromePathSet {
+	o := config.Defaults()
+	if o.ChromePathSet {
 		t.Error("未调用 WithChromePath 时 chromePathSet 应为 false")
 	}
 
 	WithChromePath("  ")(o)
-	if o.chromePathSet {
+	if o.ChromePathSet {
 		t.Error("空白路径不应被视为显式指定")
 	}
 
 	WithChromePath(filepath.Join(t.TempDir(), "not-exists.exe"))(o)
-	if !o.chromePathSet {
+	if !o.ChromePathSet {
 		t.Fatal("显式指定后 chromePathSet 应为 true")
 	}
 	if _, err := resolveChromePath(o); err == nil {

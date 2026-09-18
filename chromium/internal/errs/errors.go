@@ -1,8 +1,13 @@
-package chromium
+// Package errs 是本库全部哨兵错误的唯一定义处。
+//
+// 之所以独立成包：错误值被每一个实现包（browser / page / network / cookie / profile /
+// chrome）引用，放在任何一个上层包里都会让其它包反向依赖它，形成环。这里把它压到最底层，
+// 由门面 chromium 按原名转发给调用方，调用方的 errors.Is 判断与错误文案都不受影响。
+package errs
 
 import "errors"
 
-// 本包对外暴露的固定错误，便于调用方用 errors.Is 判断，而不是比对错误字符串。
+// 本库对外暴露的固定错误，便于调用方用 errors.Is 判断，而不是比对错误字符串。
 // 需要携带动态信息（如索引、名字）的错误仍用 fmt.Errorf 包装这些哨兵值。
 var (
 	// ErrClosed 表示 Browser 已经关闭，不再接受任何操作。
@@ -76,9 +81,9 @@ var (
 	ErrEmptyURL = errors.New("chromium: 地址为空或格式非法")
 )
 
-// errFrameScript 表示「iframe 内的脚本自身抛出异常」。
+// ErrFrameScript 表示「iframe 内的脚本自身抛出异常」。
 //
-// 内部使用：Frame.eval 依赖它把「脚本报错」与「world 失效」区分开——
+// 内部使用，门面不转发：Frame.eval 依赖它把「脚本报错」与「world 失效」区分开——
 // 前者绝不允许重试（重试会把点击、提交等副作用重复执行一遍），
 // 后者必须重试（页面导航后旧的 execution context 会被销毁）。
-var errFrameScript = errors.New("iframe 内执行 JS 失败")
+var ErrFrameScript = errors.New("iframe 内执行 JS 失败")
