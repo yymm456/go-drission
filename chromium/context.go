@@ -154,8 +154,27 @@ func (b *Browser) disposeBrowserContext(bcID cdp.BrowserContextID) {
 	if bcID == "" {
 		return
 	}
+	// rootCtx 为 nil 说明连接已经没了（并发 Close 会把它置 nil，见 connectedRootCtx）：
+	// 这个 CDP 上下文随整条连接一起消失，既没有可用的 browser executor 可发 dispose，
+	// 也没必要再发。少了这一步的后果是**真实 panic**，已有调用栈复现（rootCtx==nil 即可稳定触发）：
+	//
+	//	withDefaultTimeout(nil, ...) 的 nil 分支原样返回 nil
+	//	→ chromedp.Run(nil, ...)
+	//	→ chromedp.FromContext(nil) 对 nil 接口调 ctx.Value
+	//	→ panic: invalid memory address or nil pointer dereference
+	//
+	// 触发路径是 teardown 与建号并发：Context() 已建好 CDP 上下文、正在 attach 时
+	// Close() 把 rootCtx 置 nil，attach 失败分支随即来这里回收 → 撞上 nil。
+	//
+	// 快照刻意不加锁：本方法会经由 Browser.Context 在**持有 ctxMu** 时被调用（它 defer 释放），
+	// 而全局锁序是 mu → connMu → ctxMu；在这里补一次 b.mu.Lock() 就成了反向加锁，
+	// 与 Close「持 mu 等 ctxMu」构成 ABBA。boundedRootCtx 同样是先取快照、再判空。
+	rootCtx := b.rootCtx
+	if rootCtx == nil {
+		return
+	}
 	// teardown 无调用方 ctx，套用默认超时，避免 Chrome 无响应时 Close 永久阻塞。
-	runCtx, cancel := withDefaultTimeout(b.rootCtx, defaultCDPTimeout)
+	runCtx, cancel := withDefaultTimeout(rootCtx, defaultCDPTimeout)
 	defer cancel()
 	_ = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)

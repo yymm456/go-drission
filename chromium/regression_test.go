@@ -134,6 +134,26 @@ func TestTabInitBudgetRespectsCallerDeadline(t *testing.T) {
 	}
 }
 
+// TestBudgetDurationClampsToCallerDeadline 直接守住两个入口共用的那条超时算法。
+//
+// budgetDuration 是 boundedRootCtx 与 tabInitBudget 的唯一算法来源，抽出来就必须能
+// 单独钉住。只测 tabInitBudget 的派生 deadline 是不够的：它的父 ctx 就是入参 ctx，
+// 而 context.WithTimeout 会对父 ctx 的 deadline 再取一次 min，因此哪怕
+// budgetDuration 退化成「永远返回 defaultCDPTimeout」，tabInitBudget 的结果也是对的。
+// 真正依赖裁剪的是 boundedRootCtx——它的父是（无 deadline 的）rootCtx，只有
+// budgetDuration 自己收紧了才会尊重调用方的 deadline。
+func TestBudgetDurationClampsToCallerDeadline(t *testing.T) {
+	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelShort()
+	if d := budgetDuration(short); d > time.Second {
+		t.Fatalf("应采纳调用方更短的 deadline，实际 %v", d)
+	}
+
+	if d := budgetDuration(context.Background()); d != defaultCDPTimeout {
+		t.Fatalf("调用方无 deadline 时应返回默认超时 %v，实际 %v", defaultCDPTimeout, d)
+	}
+}
+
 // TestBoundedRootCtxNilSafe 守住与 Close 并发时的空上下文。
 //
 // Browser 尚未 Connect（或刚被 Close）时 rootCtx 为 nil，而对 nil 调
@@ -162,5 +182,67 @@ func TestConnectedRootCtxReportsState(t *testing.T) {
 	b.closed = true
 	if _, err := b.connectedRootCtx(); !errors.Is(err, ErrClosed) {
 		t.Fatalf("已关闭时应返回 ErrClosed，实际 %v", err)
+	}
+}
+
+// TestDisposeBrowserContextNilRootCtxNoPanic 守住 teardown 路径上的空指针。
+//
+// rootCtx 为 nil 时（并发 Close 刚把它置 nil），disposeBrowserContext 会走进
+// withDefaultTimeout(nil, ...) —— 它的 nil 分支原样返回 nil —— 紧接着
+// chromedp.Run(nil, ...) 会在 chromedp.FromContext 里对 nil 接口调 ctx.Value，
+// 直接 panic：
+//
+//	panic: runtime error: invalid memory address or nil pointer dereference
+//	  chromedp.FromContext                     chromedp.go:227
+//	  chromedp.initContextBrowser({0x0, 0x0})  chromedp.go:291
+//	  chromedp.Run({0x0, 0x0}, ...)            chromedp.go:326
+//	  (*Browser).disposeBrowserContext         context.go
+//
+// 触发路径是「建号与 teardown 并发」：Context() 已经建好 CDP 上下文、正在 attach 时，
+// Close() 把 rootCtx 置 nil，attach 失败分支随即来这里回收。不需要真实浏览器，
+// rootCtx==nil 就足以稳定复现，因此这个用例是纯单测。
+func TestDisposeBrowserContextNilRootCtxNoPanic(t *testing.T) {
+	var b Browser // rootCtx 零值即 nil
+
+	// 空 bcID 走早退分支，本来就安全
+	b.disposeBrowserContext("")
+
+	// 非空 bcID 才是有问题的那条：修复前这里会 panic
+	b.disposeBrowserContext("fake-browser-context-id")
+}
+
+// TestReleaseConnectionResourcesIdempotent 守住连接资源回收的幂等性。
+//
+// Close 的第 3 步与 Connect 的失败回滚共用 releaseConnectionResources，而 teardown
+// 天然会被重复触发（Close 之后又走一次失败回滚、Close 与回滚并发等）。早期是两处
+// 各写一遍的裸代码，重复执行会重复 kill 进程树 / 重复释放目录锁。
+//
+// 两点要求：零值 Browser 上连续调用必须安全；有实际句柄时回收后字段必须清空——
+// 尤其 rootCtx 必须为 nil，否则 ensureConnected 会把「连接已死」误判成「仍已连接」。
+func TestReleaseConnectionResourcesIdempotent(t *testing.T) {
+	// (1) 零值 Browser：全部字段为 nil / false，不能因为「判空没做」而 panic
+	var zero Browser
+	zero.releaseConnectionResources()
+	zero.releaseConnectionResources()
+
+	// (2) 有实际句柄：回收后必须清空，且重复调用不能改变终态
+	var b Browser
+	rootCtx, cancelRoot := context.WithCancel(context.Background())
+	_, cancelAlloc := context.WithCancel(context.Background())
+	b.rootCtx, b.rootCancel, b.allocCancel = rootCtx, cancelRoot, cancelAlloc
+
+	b.releaseConnectionResources()
+	if b.rootCtx != nil || b.rootCancel != nil || b.allocCancel != nil {
+		t.Fatalf("回收后句柄字段应全部置 nil：rootCtx=%v rootCancel=%v allocCancel=%v",
+			b.rootCtx, b.rootCancel, b.allocCancel)
+	}
+	if rootCtx.Err() == nil {
+		t.Fatal("rootCancel 应已被调用（rootCtx 应处于已取消状态）")
+	}
+
+	b.releaseConnectionResources()
+	if b.rootCtx != nil || b.rootCancel != nil || b.allocCancel != nil {
+		t.Fatalf("重复回收不应改变终态：rootCtx=%v rootCancel=%v allocCancel=%v",
+			b.rootCtx, b.rootCancel, b.allocCancel)
 	}
 }
