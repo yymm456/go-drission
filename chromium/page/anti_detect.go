@@ -5,8 +5,8 @@ import (
 
 	cdppage "github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
-	"github.com/yymm456/go-drission/chromium/internal/config"
+	"github.com/yymm456/go-drission/chromium/cdpkit"
+	"github.com/yymm456/go-drission/chromium/config"
 )
 
 // antiDetectScript 在文档创建后、页面自身脚本执行前注入（Page.addScriptToEvaluateOnNewDocument），

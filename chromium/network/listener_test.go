@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // 这些测试刻意不依赖真实 Chrome：Listener 的记录存取是纯内存逻辑，

@@ -10,12 +10,12 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	cdpnetwork "github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/target"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // TestPublicErrorMessagesAreFrozen 锁定 18 个公开哨兵错误的**文案**。
 //
-// 分包重构之后，这些错误的实体搬到了 internal/errs，本包只保留别名。别名本身
+// 分包重构之后，这些错误的实体搬到了 errs，本包只保留别名。别名本身
 // 不改变语义（同一指针，errors.Is 双向成立），但它会让 `go doc -all` 的输出由
 //
 //	ErrClosed = errors.New("chromium: 浏览器连接已关闭")
@@ -71,10 +71,10 @@ func TestPublicErrorMessagesAreFrozen(t *testing.T) {
 	}
 }
 
-// TestErrorAliasesShareIdentityWithErrs 确认公开别名与 internal/errs 是**同一个值**。
+// TestErrorAliasesShareIdentityWithErrs 确认公开别名与 errs 是**同一个值**。
 //
 // 这条是「内部包返回、外部包判断」能继续工作的唯一支点：Session / Tab 等实现代码
-// 从 internal/errs 返回错误，调用方用 chromium.ErrXxx 判断。只要别名断成包装类型
+// 从 errs 返回错误，调用方用 chromium.ErrXxx 判断。只要别名断成包装类型
 // （例如写成 fmt.Errorf("%w", errs.ErrClosed) 或自定义 error 实现），errors.Is 就会
 // 在调用方那一侧静默失效——编译期完全看不出来，所以必须钉在这里。
 //
@@ -131,7 +131,7 @@ func TestErrorAliasesShareIdentityWithErrs(t *testing.T) {
 // 别名化（type Cookie = cookie.Cookie）之后，字段列表不再出现在
 // `go doc -all ./chromium` 的输出里，API 闸门看不见它，只能靠这个用例守。
 //
-// 它守的是「契约」而不是「实现」：internal/cookie 里改个字段名，这里就会红——
+// 它守的是「契约」而不是「实现」：cookie 里改个字段名，这里就会红——
 // 那正是我们要的信号。
 func TestCookieJSONTagsAreFrozen(t *testing.T) {
 	want := map[string][2]string{
@@ -183,7 +183,7 @@ var (
 // 与 TestCookieJSONTagsAreFrozen 同因：`type Record = network.Record` 之后，
 // 字段列表不再出现在 `go doc -all ./chromium` 的输出里，API 闸门看不见它。
 // Record 的字段是用户直接读取的公开数据（rec.Status / rec.URL / ...），
-// 在 internal/network 里改个字段名就是一次源码级破坏，必须在这里拦住。
+// 在 network 里改个字段名就是一次源码级破坏，必须在这里拦住。
 func TestRecordFieldsAreFrozen(t *testing.T) {
 	want := map[string]string{
 		"RequestID":       "string",
@@ -396,7 +396,7 @@ func TestPageFieldsAreFrozen(t *testing.T) {
 //
 // 签名逐字取自 S0 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
 //
-// 注意 ContextOption：它在门面（本文件所在包）与 internal/browser 各声明一次，
+// 注意 ContextOption：它在门面（本文件所在包）与 browser 各声明一次，
 // 都是 chromedp.CreateBrowserContextOption 的别名，因此是同一个类型，
 // 方法签名里写 ContextOption 与写全名完全等价。
 

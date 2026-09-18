@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yymm456/go-drission/chromium/internal/chrome"
-	"github.com/yymm456/go-drission/chromium/internal/config"
+	"github.com/yymm456/go-drission/chromium/chrome"
+	"github.com/yymm456/go-drission/chromium/config"
 )
 
 // TestWithDefaultTimeoutOption 覆盖 Option 的默认取值与边界处理。

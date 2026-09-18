@@ -4,13 +4,13 @@ import (
 	"context"
 
 	"github.com/chromedp/cdproto/target"
-	"github.com/yymm456/go-drission/chromium/internal/config"
+	"github.com/yymm456/go-drission/chromium/config"
 )
 
 // 本文件是「门面包 chromium」与「实现包 page」之间的接线面。
 //
 // 门面包还需要对标签页做四件只有 page 包内才能做的事：构造 Tab（它有三个私有字段）、
-// 记录地址快照、释放 chromedp 会话、注入反检测脚本。Go 的 internal 规则要求跨包访问
+// 记录地址快照、释放 chromedp 会话、注入反检测脚本。Go 的包封装规则要求跨包访问
 // 必须走导出符号，所以这里提供四个导出函数。
 //
 // 注意：它们是**内部接线口，不是对外 API**。门面 chromium/api.go 刻意不转发这四个名字，

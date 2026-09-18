@@ -11,8 +11,8 @@ import (
 	cdppage "github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/cdpkit"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // Frame 代表页面里的一个 iframe（框架）。

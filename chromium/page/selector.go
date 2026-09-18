@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // 选择器模式，决定底层用哪条 CDP 定位路径。

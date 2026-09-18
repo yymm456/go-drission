@@ -9,9 +9,9 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
-	"github.com/yymm456/go-drission/chromium/internal/page"
+	"github.com/yymm456/go-drission/chromium/cdpkit"
+	"github.com/yymm456/go-drission/chromium/errs"
+	"github.com/yymm456/go-drission/chromium/page"
 )
 
 // ContextOption 用于配置隔离上下文，等价于 CDP Target.createBrowserContext 的参数选项。

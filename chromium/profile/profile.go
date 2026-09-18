@@ -8,10 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yymm456/go-drission/chromium/internal/browser"
-	"github.com/yymm456/go-drission/chromium/internal/config"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
-	"github.com/yymm456/go-drission/chromium/internal/page"
+	"github.com/yymm456/go-drission/chromium/browser"
+	"github.com/yymm456/go-drission/chromium/config"
+	"github.com/yymm456/go-drission/chromium/errs"
+	"github.com/yymm456/go-drission/chromium/page"
 )
 
 // Profile 代表一个命名的浏览器档案：独立的用户数据目录 + 独立端口，

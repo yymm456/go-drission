@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 func TestSelectorConstructors(t *testing.T) {

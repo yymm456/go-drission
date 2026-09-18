@@ -14,7 +14,7 @@ import (
 
 	cdpnetwork "github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // defaultMaxRecords 是 Listener 默认保留的最大记录条数。
@@ -27,7 +27,7 @@ const defaultMaxRecords = 1000
 // Listener 使用 Network 域被动监听网络请求。
 //
 // 它刻意不持 *Tab：监听所需的一切都由 Start(ctx) 传入（ctx 派生自 tab.Ctx）。
-// 持有 Tab 会让本包反向依赖上层（Tab 属于 chromium / 将来的 internal/page），
+// 持有 Tab 会让本包反向依赖上层（Tab 属于 chromium / 将来的 page），
 // 既构成 import 环，也让「记录存取是纯内存逻辑、可脱离浏览器单测」这件事不再成立。
 type Listener struct {
 	pattern string

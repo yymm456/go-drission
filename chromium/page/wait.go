@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // waitCond 表示 WaitBuilder 的等待条件类型

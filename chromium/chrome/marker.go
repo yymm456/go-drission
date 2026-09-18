@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yymm456/go-drission/chromium/internal/config"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/config"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // 档案标记文件：写在用户数据目录里，记录「本库在这个目录里、用哪个端口启动过 Chrome」。

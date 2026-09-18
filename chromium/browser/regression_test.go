@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/cdpkit"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // ---------- 标签页上下文超时（BUG-07 的契约） ----------

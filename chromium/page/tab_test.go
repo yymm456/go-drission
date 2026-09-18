@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // TestWaitBuilderValidation 覆盖等待条件的参数校验：

@@ -12,11 +12,11 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
-	"github.com/yymm456/go-drission/chromium/internal/chrome"
-	"github.com/yymm456/go-drission/chromium/internal/config"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
-	"github.com/yymm456/go-drission/chromium/internal/page"
+	"github.com/yymm456/go-drission/chromium/cdpkit"
+	"github.com/yymm456/go-drission/chromium/chrome"
+	"github.com/yymm456/go-drission/chromium/config"
+	"github.com/yymm456/go-drission/chromium/errs"
+	"github.com/yymm456/go-drission/chromium/page"
 )
 
 // Browser 持有整个浏览器连接和所有标签页

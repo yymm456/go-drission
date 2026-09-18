@@ -2,7 +2,7 @@
 // 以及「Cookie -> CDP 参数」的字段映射。
 //
 // 本包不感知 Tab / Browser，也不发起任何 CDP 调用——因此可以脱离浏览器单独单测。
-// 真正把参数送进某个标签页的动作留在 chromium 侧（S5 之后移到 internal/page）。
+// 真正把参数送进某个标签页的动作留在 chromium 侧（S5 之后移到 page）。
 package cookie
 
 import (
@@ -14,7 +14,7 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // Cookie 描述一个要注入的 Cookie。
@@ -62,7 +62,7 @@ func ParseCookiesJSON(data []byte) ([]Cookie, error) {
 // CDP 对缺字段只会回一句 "Invalid cookie fields"，看不出是哪一条、
 // 缺了哪个字段；批量注入几十条时尤其难查。这里提前指出来。
 //
-// 三项检查与 internal/errs 中 ErrInvalidCookie 的注释一一对应：缺 name、缺 domain、
+// 三项检查与 errs 中 ErrInvalidCookie 的注释一一对应：缺 name、缺 domain、
 // SameSite=None 却没有 Secure。
 func ValidateCookie(c Cookie, idx int) error {
 	if strings.TrimSpace(c.Name) == "" {

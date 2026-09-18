@@ -1,13 +1,13 @@
 package chromium
 
-// 本文件是门面的第一部分（S1）：把已经下沉到 internal 的公开符号按原名转发出去。
+// 本文件是门面的第一部分（S1）：把已经下沉到各子包的公开符号按原名转发出去。
 //
 // 为什么用「类型别名 + 转发函数」而不是包装类型：
 //   - 类型别名（type Option = config.Option）是**同一个类型**，不做任何装箱与转换，
 //     调用方原有的写法、传参、接口实现关系全部保持不变；
 //   - 转发函数保证文档注释只有一个出处（就是这里），且不存在可被外部改写的函数变量。
 //
-// 约定：实现内部一律直接使用 internal 包里的名字（errs.ErrClosed / config.Defaults），
+// 约定：实现内部一律直接使用各子包里的名字（errs.ErrClosed / config.Defaults），
 // 本文件里的别名与转发只是「对外契约」，不承担逻辑。
 
 import (
@@ -16,14 +16,14 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/browser"
-	"github.com/yymm456/go-drission/chromium/internal/chrome"
-	"github.com/yymm456/go-drission/chromium/internal/config"
-	"github.com/yymm456/go-drission/chromium/internal/cookie"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
-	"github.com/yymm456/go-drission/chromium/internal/network"
-	"github.com/yymm456/go-drission/chromium/internal/page"
-	"github.com/yymm456/go-drission/chromium/internal/profile"
+	"github.com/yymm456/go-drission/chromium/browser"
+	"github.com/yymm456/go-drission/chromium/chrome"
+	"github.com/yymm456/go-drission/chromium/config"
+	"github.com/yymm456/go-drission/chromium/cookie"
+	"github.com/yymm456/go-drission/chromium/errs"
+	"github.com/yymm456/go-drission/chromium/network"
+	"github.com/yymm456/go-drission/chromium/page"
+	"github.com/yymm456/go-drission/chromium/profile"
 )
 
 // Option 是函数式配置项
@@ -34,7 +34,7 @@ type Option = config.Option
 // JSON 字段与 session.CookieItem 完全一致，因此两侧导出的 cookies.json
 // 可以互相导入——这正是「Session 抓包拿 Cookie → 浏览器免登录」的通道。
 //
-// 字段定义见 internal/cookie。别名与它指向的是同一个类型，不做任何转换，
+// 字段定义见 cookie。别名与它指向的是同一个类型，不做任何转换，
 // 因此 `*Cookie` 可直接互换；字段名 / 类型 / JSON tag 由 api_test.go 的
 // TestCookieJSONTagsAreFrozen 钉住（别名化之后它们不再出现在 go doc 输出里）。
 type Cookie = cookie.Cookie
@@ -51,15 +51,15 @@ type CookieSource = cookie.CookieSource
 
 // Record 一条完整的请求/响应记录。
 //
-// 定义见 internal/network；Records() 返回的是它的深拷贝。
+// 定义见 network；Records() 返回的是它的深拷贝。
 type Record = network.Record
 
 // Listener 使用 Network 域被动监听网络请求。
 //
-// 定义见 internal/network。模式为空表示全部命中；Start(ctx) 的 ctx 必须派生自 tab.Ctx。
+// 定义见 network。模式为空表示全部命中；Start(ctx) 的 ctx 必须派生自 tab.Ctx。
 type Listener = network.Listener
 
-// 对外暴露的哨兵错误；与 internal/errs 里的是同一个值（同一指针），
+// 对外暴露的哨兵错误；与 errs 里的是同一个值（同一指针），
 // 因此 errors.Is 在「内部包返回、外部包判断」之间照旧成立。
 var (
 	// ErrClosed 表示 Browser 已经关闭，不再接受任何操作。
@@ -190,8 +190,8 @@ func WithFlag(name, value string) Option { return config.WithFlag(name, value) }
 //	chromium.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 func WithLogger(l *slog.Logger) Option { return config.WithLogger(l) }
 
-// 以下是 S2 下沉到 internal/chrome 后需要门面转发的公开 API。
-// 实现见 internal/chrome/path.go，这里只做转发，保持对外契约与文档不变。
+// 以下是 S2 下沉到 chrome 后需要门面转发的公开 API。
+// 实现见 chrome/path.go，这里只做转发，保持对外契约与文档不变。
 
 // SearchedChromePaths 返回最近一次自动查找时枚举过的全部路径。
 // 主要用于排查「找不到浏览器」：错误里会列出这些位置，便于确认真实安装路径。
@@ -201,52 +201,52 @@ func SearchedChromePaths() []string { return chrome.SearchedChromePaths() }
 // 场景：进程启动后用户才安装浏览器，或安装位置发生了变化。
 func RefreshChromePath() { chrome.RefreshChromePath() }
 
-// 以下是 S3 下沉到 internal/cookie 后需要门面转发的公开 API。
+// 以下是 S3 下沉到 cookie 后需要门面转发的公开 API。
 
 // ParseCookiesJSON 解析 Cookie JSON（支持 chrome 扩展导出 / 本包与 session 包导出的格式）。
 // 顶层必须是数组；空内容返回空切片而不是错误。
 func ParseCookiesJSON(data []byte) ([]Cookie, error) { return cookie.ParseCookiesJSON(data) }
 
-// 以下是 S5 下沉到 internal/page 后需要门面转发的公开 API。
+// 以下是 S5 下沉到 page 后需要门面转发的公开 API。
 //
 // 为什么这 6 个类型只能「别名 + 转发」、不能像别的包那样保留原方法：
 // Go 不允许给非本包定义的类型添加方法（cannot define new methods on non-local type），
 // 所以 Tab / Element / Frame / FrameElement / Selector / WaitBuilder 的**全部方法**
-// 必须一次性搬进 internal/page —— 这是 S5 无法再拆成多个可编译子步的根本原因。
+// 必须一次性搬进 page —— 这是 S5 无法再拆成多个可编译子步的根本原因。
 //
 // 别名化之后，这 6 个类型的字段与全部方法都会从 go doc 输出里消失，
 // 公开 API 闸门看不见它们，因此由 api_test.go 做编译期冻结（方法表达式 var 块）+ 反射冻结字段。
 
 // Tab 是一个被托管的标签页。
 //
-// 定义见 internal/page。所有 I/O 方法都接受调用方传入的 ctx（应从 Ctx 派生），
+// 定义见 page。所有 I/O 方法都接受调用方传入的 ctx（应从 Ctx 派生），
 // 由调用方控制超时与取消。
 type Tab = page.Tab
 
 // Element 是选择器定位到的单个元素。
 //
-// 定义见 internal/page。Element 不缓存 DOM 节点，每次操作都重新定位。
+// 定义见 page。Element 不缓存 DOM 节点，每次操作都重新定位。
 type Element = page.Element
 
 // Frame 表示页面内的一个 iframe。
 //
-// 定义见 internal/page。导航或 iframe 重建后 Frame 会失效（ErrFrameDetached），
+// 定义见 page。导航或 iframe 重建后 Frame 会失效（ErrFrameDetached），
 // 需要重新用 Tab.Frame / FrameByURL / FrameByName 取。
 type Frame = page.Frame
 
 // FrameElement 是在 iframe 内部定位到的元素。
 //
-// 定义见 internal/page。
+// 定义见 page。
 type FrameElement = page.FrameElement
 
 // Selector 描述「怎么定位一个元素」。
 //
-// 定义见 internal/page。用 CSS / XPath / ID / JS 构造，不要直接构造结构体。
+// 定义见 page。用 CSS / XPath / ID / JS 构造，不要直接构造结构体。
 type Selector = page.Selector
 
 // WaitBuilder 是链式等待条件构造器，由 Tab.Wait / Element.Wait 返回。
 //
-// 定义见 internal/page。必须指定条件后再 Do，否则返回 ErrWaitConditionUnset。
+// 定义见 page。必须指定条件后再 Do，否则返回 ErrWaitConditionUnset。
 type WaitBuilder = page.WaitBuilder
 
 // CSS 按 CSS 选择器定位（chromedp.ByQuery）。
@@ -276,31 +276,31 @@ func ID(id string) Selector { return page.ID(id) }
 // 注意：这只支持返回单个元素；要取多个请改用 CSS + 遍历。
 func JS(expr string) Selector { return page.JS(expr) }
 
-// 以下是 S6 下沉到 internal/browser 后需要门面转发的公开 API。
+// 以下是 S6 下沉到 browser 后需要门面转发的公开 API。
 //
 // 与 S5 同一个语言事实：Go 不允许给非本包定义的类型添加方法
 // （cannot define new methods on non-local type），所以 Browser / BrowserContext 的
-// **全部方法**必须一次性搬进 internal/browser —— 这是 S6 也是原子步的原因。
+// **全部方法**必须一次性搬进 browser —— 这是 S6 也是原子步的原因。
 //
 // 别名化之后，这两个类型的字段与全部方法都会从 go doc 输出里消失，
 // 公开 API 闸门看不见它们，因此由 api_test.go 做编译期冻结（方法表达式 var 块）+ 反射冻结字段。
 
 // ContextOption 是创建隔离上下文时的可选项。
 //
-// 它是上游 chromedp.CreateBrowserContextOption 的别名，与 internal/browser 里的
+// 它是上游 chromedp.CreateBrowserContextOption 的别名，与 browser 里的
 // 同名声明指向同一个类型（两处各声明一次，是为了让门面的公开签名与实现包的签名
 // 各自都可读写，而不是靠一次声明跨包引用）。
 type ContextOption = chromedp.CreateBrowserContextOption
 
 // Browser 是一个被托管的浏览器实例：一个 Chrome 进程 + 一个共享的 chromedp 连接。
 //
-// 定义见 internal/browser。典型用法是 OpenPage 一次拿到 Browser 与首个 Tab，
+// 定义见 browser。典型用法是 OpenPage 一次拿到 Browser 与首个 Tab，
 // 之后用 NewTab / GetTab / LatestTab 取标签页，用完 Close。
 type Browser = browser.Browser
 
 // BrowserContext 是一个命名的隔离上下文（CDP 的 BrowserContext）。
 //
-// 定义见 internal/browser。同一个 Browser 下的多个上下文之间 Cookie / 存储完全隔离，
+// 定义见 browser。同一个 Browser 下的多个上下文之间 Cookie / 存储完全隔离，
 // 比各起一个 Chrome 进程轻量得多，适合多账户场景。
 type BrowserContext = browser.BrowserContext
 
@@ -321,27 +321,27 @@ func OpenPage(ctx context.Context, port int, opts ...Option) (*Browser, *Tab, er
 //	chromium.WithContextProxy("http://127.0.0.1:7891")
 func WithContextProxy(proxy string) ContextOption { return browser.WithContextProxy(proxy) }
 
-// 以下是 S7 下沉到 internal/profile 后需要门面转发的公开 API。
+// 以下是 S7 下沉到 profile 后需要门面转发的公开 API。
 //
 // 与 S5/S6 同一个语言事实：Go 不允许给非本包定义的类型添加方法，
-// 所以 Profile / ProfileManager 的**全部方法**必须一次性搬进 internal/profile。
+// 所以 Profile / ProfileManager 的**全部方法**必须一次性搬进 profile。
 //
 // 别名化之后，这两个类型的字段与全部方法都会从 go doc 输出里消失，
 // 公开 API 闸门看不见它们，因此由 api_test.go 做编译期冻结（方法表达式 var 块）+ 反射冻结字段。
 //
-// 依赖方向：internal/profile -> internal/browser（档案「拥有」浏览器，不是反过来），
+// 依赖方向：profile -> browser（档案「拥有」浏览器，不是反过来），
 // 与 §6.1 的目标依赖图一致。
 
 // Profile 代表一个命名的浏览器档案：独立的用户数据目录 + 独立端口，
 // 因此各 Profile 之间的 Cookie / 登录态 / 代理 / UA 完全隔离，且登录态持久化到磁盘。
 //
-// 定义见 internal/profile。Name / Dir / Port 是只读元信息，
+// 定义见 profile。Name / Dir / Port 是只读元信息，
 // 已打开的浏览器用 Browser() 取（可能为 nil，表示尚未 Open）。
 type Profile = profile.Profile
 
 // ProfileManager 管理多个命名 Profile，实现多账户隔离。
 //
-// 定义见 internal/profile。同名 Profile 复用同一个 Browser，首次打开时才真正
+// 定义见 profile。同名 Profile 复用同一个 Browser，首次打开时才真正
 // 连接/启动 Chrome（懒加载）；并发模型是「同名串行、异名并行」。
 type ProfileManager = profile.ProfileManager
 

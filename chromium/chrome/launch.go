@@ -1,7 +1,7 @@
 // Package chrome 负责 Chrome 进程与数据目录的全部底层操作：可执行文件查找、
 // 启动与端口探测、进程树回收、端口分配、数据目录排他锁与档案标记。
 //
-// 本包只向下依赖 internal/config 与 internal/errs，不感知 Browser / Tab 等上层概念。
+// 本包只向下依赖 config 与 errs，不感知 Browser / Tab 等上层概念。
 package chrome
 
 import (
@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yymm456/go-drission/chromium/internal/config"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/config"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // ResolveChromePath 确定最终用于启动的浏览器可执行文件。

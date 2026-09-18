@@ -8,7 +8,7 @@ import (
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
-	"github.com/yymm456/go-drission/chromium/internal/page"
+	"github.com/yymm456/go-drission/chromium/page"
 )
 
 // targetInfo 是「一个归 Browser 托管的 page target」的概要。

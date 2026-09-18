@@ -10,8 +10,8 @@ import (
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/cookie"
-	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/cookie"
+	"github.com/yymm456/go-drission/chromium/errs"
 )
 
 // SetCookie 注入单个 Cookie。

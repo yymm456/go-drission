@@ -29,11 +29,11 @@ go-drission/
 ├── chromium/  库主体：浏览器自动化（门面，只做别名与转发）
 │   ├── api.go  门面：类型别名 + 包级函数转发（对外的全部公开 API 都在这里）
 │   └── doc.go  包文档：分层结构、ctx 约定、定位与操作分离
-├── chromium/internal/browser/  Browser / BrowserContext / 标签页生命周期
+├── chromium/browser/  Browser / BrowserContext / 标签页生命周期
 │   ├── browser.go  Browser：连接、标签页管理、OpenPage
 │   ├── context.go  BrowserContext：单浏览器内多账户隔离上下文
 │   └── targets.go  target 列表查询与标签页同步
-├── chromium/internal/page/  页面对象图：Tab / Element / Frame / Selector / Wait
+├── chromium/page/  页面对象图：Tab / Element / Frame / Selector / Wait
 │   ├── tab.go  Tab：导航、截图、Eval、标签页与窗口管理
 │   ├── element.go  Element：查询与操作分离（Ele*/EleCSS/... → Click/SendKeys/...）
 │   ├── wait.go  WaitBuilder：链式等待（页面级 tab.Wait() / 元素级 el.Wait()）
@@ -43,25 +43,25 @@ go-drission/
 │   ├── cookies.go  Tab 上的 Cookie 方法（纯逻辑在 cookie/）
 │   ├── listen.go  Tab.Listen 工厂（监听实体在 network/）
 │   └── wiring.go  门面与 page 之间的接线面（只给包内与 browser 用，不对外）
-├── chromium/internal/network/  网络被动监听
+├── chromium/network/  网络被动监听
 │   ├── listener.go / events.go  Listener：Network 域事件订阅与生命周期
 │   └── record.go / match.go  Record：请求/响应记录与 URL 匹配
-├── chromium/internal/cookie/  Cookie 的纯逻辑（不依赖浏览器）
+├── chromium/cookie/  Cookie 的纯逻辑（不依赖浏览器）
 │   └── cookie.go  Cookie / CookieSource：校验、解析、参数构造、导入导出
-├── chromium/internal/chrome/  浏览器进程与本机资源
+├── chromium/chrome/  浏览器进程与本机资源
 │   ├── launch.go / probe.go  端口探测与 Chrome 启动
 │   ├── process.go  子进程管理（Chrome PID、优雅退出）
 │   ├── path.go / path_windows.go / path_unix.go  浏览器可执行文件自动发现（分平台）
 │   ├── port.go  空闲端口分配
 │   ├── lock_windows.go / lock_other.go  跨进程 user-data-dir 排他锁
 │   └── marker.go  档案标记文件：固定端口接管前校验「这浏览器是不是我的」
-├── chromium/internal/profile/  多账户命名档案
+├── chromium/profile/  多账户命名档案
 │   └── profile.go  Profile / ProfileManager：独立目录 + 独立端口的进程级隔离
-├── chromium/internal/config/  配置
+├── chromium/config/  配置
 │   └── options.go  Options 与函数式配置项 WithXxx
-├── chromium/internal/cdpkit/  CDP 通用助手
+├── chromium/cdpkit/  CDP 通用助手
 │   └── ctx.go / value.go / budget.go  上下文派生、CDP 值解码、调用超时预算
-├── chromium/internal/errs/  错误
+├── chromium/errs/  错误
 │   └── errors.go  全部哨兵错误（ErrClosed / ErrNotConnected / ErrBrowserMismatch 等）
 ├── session/               纯 HTTP 模式（对标 SessionPage）
 │   ├── session.go      Session：net/http 封装，Get/Post/PostForm/PostJSON/Do
@@ -87,8 +87,9 @@ go-drission/
 ```
 
 > `chromium/` 本身**不含任何实现**：它是门面，只做「类型别名 + 包级函数转发」。
-> 实现全部在 `chromium/internal/*`，由 Go 的 internal 规则保证外部拿不到，
-> 因此内部怎么拆都不会影响调用方 —— 你只要 `import ".../chromium"`。
+> 实现按职责拆成 `chromium/` 下的各个子包（browser / page / network / cookie /
+> chrome / profile / config / cdpkit / errs）。对外仍只暴露门面这一个入口 ——
+> 你只要 `import ".../chromium"`，子包怎么用都不影响调用方。
 >
 > 依赖只允许单向：`browser → page/chrome/cdpkit/config/errs`、
 > `profile → browser`、`page → cookie/network/cdpkit/errs`，无环。
