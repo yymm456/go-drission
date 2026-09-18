@@ -1,6 +1,7 @@
 package chromium
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -156,6 +157,54 @@ func TestCookieJSONTagsAreFrozen(t *testing.T) {
 		}
 		if kind := f.Type.Kind().String(); kind != exp[1] {
 			t.Errorf("字段 %s 的类型 = %s，期望 %s", f.Name, kind, exp[1])
+		}
+	}
+}
+
+// Listener 的 7 个导出方法在别名化之后也不再出现在 go doc 输出里。
+// 用方法表达式做**编译期**冻结：签名一旦改动就编译不过，零运行成本。
+// （这比写反射用例更强——反射只能查到「方法存在」，查不出签名。）
+var (
+	_ func(*Listener)                        = (*Listener).Clear
+	_ func(*Listener) int                    = (*Listener).Len
+	_ func(*Listener, int) *Listener         = (*Listener).MaxRecords
+	_ func(*Listener) []*Record              = (*Listener).Records
+	_ func(*Listener, context.Context) error = (*Listener).Start
+	_ func(*Listener)                        = (*Listener).Stop
+	_ func(*Listener)                        = (*Listener).WaitIdle
+)
+
+// TestRecordFieldsAreFrozen 钉住 Record 的导出字段名与类型。
+//
+// 与 TestCookieJSONTagsAreFrozen 同因：`type Record = network.Record` 之后，
+// 字段列表不再出现在 `go doc -all ./chromium` 的输出里，API 闸门看不见它。
+// Record 的字段是用户直接读取的公开数据（rec.Status / rec.URL / ...），
+// 在 internal/network 里改个字段名就是一次源码级破坏，必须在这里拦住。
+func TestRecordFieldsAreFrozen(t *testing.T) {
+	want := map[string]string{
+		"RequestID":       "string",
+		"URL":             "string",
+		"Method":          "string",
+		"RequestHeaders":  "map",
+		"RequestBody":     "string",
+		"Status":          "int64",
+		"ResponseHeaders": "map",
+		"ResponseBody":    "string",
+	}
+
+	typ := reflect.TypeFor[Record]()
+	if n := len(want); typ.NumField() != n {
+		t.Fatalf("Record 的字段数变了：期望 %d，实际 %d（公开数据契约可能已被破坏）",
+			n, typ.NumField())
+	}
+	for f := range typ.Fields() {
+		exp, ok := want[f.Name]
+		if !ok {
+			t.Errorf("出现了预期之外的字段 %s", f.Name)
+			continue
+		}
+		if kind := f.Type.Kind().String(); kind != exp {
+			t.Errorf("字段 %s 的类型 = %s，期望 %s", f.Name, kind, exp)
 		}
 	}
 }

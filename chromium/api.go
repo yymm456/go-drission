@@ -18,6 +18,7 @@ import (
 	"github.com/yymm456/go-drission/chromium/internal/config"
 	"github.com/yymm456/go-drission/chromium/internal/cookie"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
+	"github.com/yymm456/go-drission/chromium/internal/network"
 )
 
 // Option 是函数式配置项
@@ -42,6 +43,16 @@ type Cookie = cookie.Cookie
 //	s.PostForm(ctx, loginURL, form)          // 纯 HTTP 登录，拿到 Cookie
 //	tab.LoginWithCookies(ctx, homeURL, s.Jar()) // 把登录态交给浏览器，免登录
 type CookieSource = cookie.CookieSource
+
+// Record 一条完整的请求/响应记录。
+//
+// 定义见 internal/network；Records() 返回的是它的深拷贝。
+type Record = network.Record
+
+// Listener 使用 Network 域被动监听网络请求。
+//
+// 定义见 internal/network。模式为空表示全部命中；Start(ctx) 的 ctx 必须派生自 tab.Ctx。
+type Listener = network.Listener
 
 // 对外暴露的哨兵错误；与 internal/errs 里的是同一个值（同一指针），
 // 因此 errors.Is 在「内部包返回、外部包判断」之间照旧成立。

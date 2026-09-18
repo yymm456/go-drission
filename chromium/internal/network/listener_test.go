@@ -1,4 +1,4 @@
-package chromium
+package network
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // 这些测试刻意不依赖真实 Chrome：Listener 的记录存取是纯内存逻辑，
@@ -201,8 +203,8 @@ func TestListenerRecordsCapUnlimited(t *testing.T) {
 // 底层 chromedp.ListenTarget 遇到无路由信息的 ctx 会直接 panic，必须在库内拦住。
 func TestListenerRejectsBareContext(t *testing.T) {
 	l := newTestListener()
-	if err := l.Start(context.Background()); !errors.Is(err, ErrInvalidContext) {
-		t.Fatalf("期望 ErrInvalidContext，实际 %v", err)
+	if err := l.Start(context.Background()); !errors.Is(err, errs.ErrInvalidContext) {
+		t.Fatalf("期望 errs.ErrInvalidContext，实际 %v", err)
 	}
 }
 
