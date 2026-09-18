@@ -74,8 +74,8 @@ func main() {
 	}
 
 	// 证明 1：Cookie 隔离——各上下文只能读到自己写入的会话令牌
-	log.Printf("上下文 user_a 的 Cookie: %s", cookieSummary(tabA, navA))
-	log.Printf("上下文 user_b 的 Cookie: %s", cookieSummary(tabB, navB))
+	log.Printf("上下文 user_a 的 Cookie: %s", cookieSummary(navA, tabA))
+	log.Printf("上下文 user_b 的 Cookie: %s", cookieSummary(navB, tabB))
 
 	// 证明 2：同上下文多标签共享 Cookie——user_a 再开一个标签页，会话令牌与 tabA 相同
 	tabA2, err := ctxA.NewTab(openCtx)
@@ -87,7 +87,7 @@ func main() {
 	if err := tabA2.Navigate(navA2, site); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("上下文 user_a 第二个标签页的 Cookie: %s（应与第一个标签相同）", cookieSummary(tabA2, navA2))
+	log.Printf("上下文 user_a 第二个标签页的 Cookie: %s（应与第一个标签相同）", cookieSummary(navA2, tabA2))
 
 	// 证明 3：窗口语义——同上下文标签同窗口、不同上下文不同窗口、但同属一个浏览器进程
 	widA, _ := tabA.WindowID(navA)
@@ -109,7 +109,7 @@ func main() {
 }
 
 // cookieSummary 读取标签页在 site 下的 Cookie，压缩成 "name=value, ..." 便于对比
-func cookieSummary(tab *chromium.Tab, ctx context.Context) string {
+func cookieSummary(ctx context.Context, tab *chromium.Tab) string {
 	cookies, err := tab.GetCookies(ctx, site)
 	if err != nil {
 		return "(读取失败: " + err.Error() + ")"

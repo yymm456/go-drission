@@ -18,10 +18,10 @@ type profileLock struct {
 
 // acquireProfileLock 对锁文件加非阻塞排他 flock。
 func acquireProfileLock(userDataDir string) (*profileLock, error) {
-	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
+	if err := os.MkdirAll(userDataDir, 0o750); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(userDataDir, "go-drission.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(filepath.Join(userDataDir, "go-drission.lock"), os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
 		return nil, err
 	}

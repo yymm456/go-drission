@@ -11,7 +11,11 @@
 //	$env:DEMO_SITE='https://your-site'
 //	$env:DEMO_USER_A='user-a'; $env:DEMO_PASS_A='pass-a'
 //	$env:DEMO_USER_B='user-b'; $env:DEMO_PASS_B='pass-b'
-//	go run .
+//	go run ./cmd/demo
+//
+// 之所以放在 cmd/demo 而不是模块根目录：根目录是库（package chromium / session），
+// 若留一个 package main，`go install github.com/yymm456/go-drission@latest` 会装出一个
+// 会去真实站点登录的 demo 程序，既不是用户想要的，也容易惹麻烦。
 //
 // 已拆分出去的示例：
 //
@@ -131,7 +135,7 @@ func loginInContext(ctx context.Context, browser *chromium.Browser, name string,
 	if err != nil {
 		return fmt.Errorf("上下文内新建标签页失败: %w", err)
 	}
-	if err := login(ctx, tab, acc, shotPrefix); err != nil {
+	if err := login(tab, acc, shotPrefix); err != nil {
 		return err
 	}
 
@@ -237,7 +241,10 @@ func demoTabSwitching(ctx context.Context, browser *chromium.Browser) {
 //  2. 表单检测改用轮询等待，而非一次 Eval 就下结论（SPA 挂载前元素不存在）。
 //  3. 提交表单后等待离开登录页，而非死等固定秒数。
 //  4. 交互前 BringToFront 置前（后台窗口节流会丢输入），输入后校验值、未生效回退 JS 赋值。
-func login(ctx context.Context, tab *chromium.Tab, acc account, shotPrefix string) error {
+//
+// 不接受外层 ctx：本函数的每一步超时都必须以 tab.Ctx 为父派生，
+// 否则会丢掉 chromedp 的 target 路由信息（见 README「ctx 必须从 tab.Ctx 派生」）。
+func login(tab *chromium.Tab, acc account, shotPrefix string) error {
 	navCtx, cancel := context.WithTimeout(tab.Ctx, 60*time.Second)
 	defer cancel()
 
@@ -268,39 +275,41 @@ func login(ctx context.Context, tab *chromium.Tab, acc account, shotPrefix strin
 	if hasLoginForm(tab) {
 		fmt.Printf("    [登录] 检测到登录表单，开始填写 ...\n")
 
-		if err := tab.SendKeys(navCtx, "#username", acc.user); err != nil {
+		if err := tab.EleID("username").SendKeys(navCtx, acc.user); err != nil {
 			return fmt.Errorf("填写用户名失败: %w", err)
 		}
-		if err := tab.SendKeys(navCtx, "#password", acc.password); err != nil {
+		if err := tab.EleID("password").SendKeys(navCtx, acc.password); err != nil {
 			return fmt.Errorf("填写密码失败: %w", err)
 		}
 
 		// 校验输入是否真的写入（后台窗口节流可能吃掉 SendKeys），未生效则用 JS 直接赋值兜底
-		if v, _ := tab.Attribute(navCtx, "#username", "value"); v != acc.user {
+		if v, _ := tab.EleID("username").Attribute(navCtx, "value"); v != acc.user {
 			fmt.Printf("    [警告] SendKeys 未生效(#username=%q)，回退 SetValue\n", v)
-			if err := tab.SetValue(navCtx, "#username", acc.user); err != nil {
+			if err := tab.EleID("username").SetValue(navCtx, acc.user); err != nil {
 				return fmt.Errorf("SetValue 填写用户名失败: %w", err)
 			}
-			if err := tab.SetValue(navCtx, "#password", acc.password); err != nil {
+			if err := tab.EleID("password").SetValue(navCtx, acc.password); err != nil {
 				return fmt.Errorf("SetValue 填写密码失败: %w", err)
 			}
 		}
-		if err := tab.Click(navCtx, ".p-button-label"); err != nil {
+		if err := tab.EleCSS(".p-button-label").Click(navCtx); err != nil {
 			return fmt.Errorf("点击登录失败: %w", err)
 		}
 
-		// 等待离开登录页（URL 不再包含 "login"），而不是死等固定秒数
+		// 等待离开登录页（URL 不再包含 "login"），而不是死等固定秒数。
+		// 注意 break 必须用标签跳出外层 for：写在 select 里的 break 只跳出 select，
+		// 循环会继续空转直到 deadline，白白烧 CPU。
 		waitCtx, waitCancel := context.WithTimeout(tab.Ctx, 20*time.Second)
 		defer waitCancel()
-		deadline := time.Now().Add(20 * time.Second)
-		for time.Now().Before(deadline) {
+	pollLogin:
+		for {
 			u, err := tab.CurrentURL(waitCtx)
 			if err == nil && u != "" && !strings.Contains(u, "login") {
 				break
 			}
 			select {
 			case <-waitCtx.Done():
-				break
+				break pollLogin
 			case <-time.After(300 * time.Millisecond):
 			}
 		}

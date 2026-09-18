@@ -1,5 +1,8 @@
 // example/wait 演示链式 Wait Builder 的各种等待条件。
 //
+// 元素级条件走 el.Wait()（Visible / Present / Text / Count），
+// 页面级条件走 tab.Wait()（URL / Ready）。
+//
 //	go run ./example/wait
 package main
 
@@ -34,21 +37,21 @@ func main() {
 	}
 
 	// 2) 等元素可见
-	if err := tab.Wait().Element("h1").Visible().Timeout(5 * time.Second).Do(tab.Ctx); err != nil {
+	if err := tab.EleCSS("h1").Wait().Visible().Timeout(5 * time.Second).Do(tab.Ctx); err != nil {
 		log.Printf("h1 不可见: %v", err)
 	} else {
 		log.Println("h1 已可见")
 	}
 
-	// 3) 等元素数量 >= n
-	if err := tab.Wait().Element("a").Count(1).Timeout(5 * time.Second).Do(tab.Ctx); err != nil {
+	// 3) 等元素数量 >= n（列表渲染完成的典型判据）
+	if err := tab.EleCSS("a").Wait().Count(1).Timeout(5 * time.Second).Do(tab.Ctx); err != nil {
 		log.Printf("链接数量不足: %v", err)
 	} else {
 		log.Println("至少有 1 个 <a>")
 	}
 
 	// 4) 等元素文本包含子串
-	if err := tab.Wait().Element("h1").Text("Example").Timeout(5 * time.Second).Do(tab.Ctx); err != nil {
+	if err := tab.EleCSS("h1").Wait().Text("Example").Timeout(5 * time.Second).Do(tab.Ctx); err != nil {
 		log.Printf("h1 文本不匹配: %v", err)
 	} else {
 		log.Println("h1 文本包含 Example")
@@ -59,6 +62,14 @@ func main() {
 		log.Printf("URL 不匹配: %v", err)
 	} else {
 		log.Println("URL 命中 example.com")
+	}
+
+	// 6) 等元素出现在 DOM（不要求可见）——只等一个条件时也可以直接用方法
+	if err := tab.EleCSS("body").Wait().Present().Timeout(5 * time.Second).Do(tab.Ctx); err != nil {
+		log.Printf("body 未出现: %v", err)
+	}
+	if err := tab.EleCSS("h1").WaitVisible(tab.Ctx); err != nil {
+		log.Printf("等 h1 可见失败: %v", err)
 	}
 
 	// 未指定条件时 Do 会明确报错，而不是静默失败

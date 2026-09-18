@@ -71,12 +71,12 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 		return nil, fmt.Errorf("Context: 上下文名字不能为空")
 	}
 
-	// 先在 mu 下读取 closed 状态，再释放，避免与 ctxMu 形成嵌套锁
+	// 先在 mu 下读取连接状态，再释放，避免与 ctxMu 形成嵌套锁
 	b.mu.Lock()
-	closed := b.closed
+	err := b.ensureConnected()
 	b.mu.Unlock()
-	if closed {
-		return nil, fmt.Errorf("浏览器连接已关闭")
+	if err != nil {
+		return nil, err
 	}
 
 	b.ctxMu.Lock()
@@ -94,7 +94,7 @@ func (b *Browser) Context(ctx context.Context, name string, opts ...ContextOptio
 	var firstID target.ID
 	runCtx, cancelRun := b.boundedRootCtx(ctx)
 	defer cancelRun()
-	err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
+	err = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
 
 		p := target.CreateBrowserContext()
@@ -149,7 +149,7 @@ func (b *Browser) disposeBrowserContext(bcID cdp.BrowserContextID) {
 		return
 	}
 	// teardown 无调用方 ctx，套用默认超时，避免 Chrome 无响应时 Close 永久阻塞。
-	runCtx, cancel := context.WithTimeout(b.rootCtx, defaultCDPTimeout)
+	runCtx, cancel := withDefaultTimeout(b.rootCtx, defaultCDPTimeout)
 	defer cancel()
 	_ = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
@@ -180,14 +180,16 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 	defer bc.mu.Unlock()
 
 	if bc.closed {
-		return nil, fmt.Errorf("隔离上下文 %q 已关闭", bc.name)
+		return nil, fmt.Errorf("%w: %s", ErrContextClosed, bc.name)
 	}
+	timeout := bc.browser.opts.defaultTimeout
 
 	// 首次：消费创建上下文时预建的首个 target
 	if !bc.firstUsed {
 		bc.firstUsed = true
-		tab := &Tab{ID: bc.firstTargetID, Ctx: bc.firstTabCtx, cancel: bc.firstTabCancel, URL: "about:blank"}
+		tab := &Tab{ID: bc.firstTargetID, Ctx: bc.firstTabCtx, cancel: bc.firstTabCancel, url: "about:blank", timeout: timeout, logger: bc.browser.opts.logger}
 		bc.tabs = append(bc.tabs, tab)
+		bc.applyAntiDetect(tab)
 		return tab, nil
 	}
 
@@ -211,9 +213,20 @@ func (bc *BrowserContext) NewTab(ctx context.Context) (*Tab, error) {
 		cancel()
 		return nil, err
 	}
-	tab := &Tab{ID: tid, Ctx: tabCtx, cancel: cancel, URL: "about:blank"}
+	tab := &Tab{ID: tid, Ctx: tabCtx, cancel: cancel, url: "about:blank", timeout: timeout, logger: bc.browser.opts.logger}
 	bc.tabs = append(bc.tabs, tab)
+	bc.applyAntiDetect(tab)
 	return tab, nil
+}
+
+// applyAntiDetect 给隔离上下文内的新建标签页注入反检测脚本。
+//
+// 刻意不返回 error：注入反检测脚本属于增强能力，失败只告警、绝不让 NewTab 失败。
+// 否则使用者会因为「stealth 脚本没注入上」而完全拿不到标签页，得不偿失。
+func (bc *BrowserContext) applyAntiDetect(tab *Tab) {
+	if err := tab.ensureAntiDetect(tab.Ctx, bc.browser.opts); err != nil {
+		bc.browser.opts.logger.Warn("注入反检测脚本失败", "context", bc.name, "tab", tab.ID, "err", err)
+	}
 }
 
 // Tabs 返回该隔离上下文内当前托管的所有标签页。
@@ -232,11 +245,16 @@ func (bc *BrowserContext) CloseTab(ctx context.Context, tab *Tab) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	// 通过 browser 级连接关闭目标，避免依赖调用方传入的 ctx 是否携带路由
-	_ = chromedp.Run(bc.browser.rootCtx, chromedp.ActionFunc(func(c context.Context) error {
+	// 通过 browser 级连接关闭目标，避免依赖调用方传入的 ctx 是否携带路由；
+	// 用 boundedRootCtx 约束，Chrome 无响应时不会把调用方永久挂住。
+	runCtx, cancelRun := bc.browser.boundedRootCtx(ctx)
+	defer cancelRun()
+	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
 		return target.CloseTarget(tab.ID).Do(bexec)
-	}))
+	})); err != nil {
+		bc.browser.opts.logger.Warn("关闭隔离上下文内标签页失败", "context", bc.name, "tab", tab.ID, "err", err)
+	}
 	if tab.cancel != nil {
 		tab.cancel()
 	}

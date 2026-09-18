@@ -21,7 +21,7 @@ type profileLock struct {
 // acquireProfileLock 以独占方式（share mode = 0，禁止任何其他进程并发打开）打开锁文件。
 // 已被其他进程持有时返回错误。
 func acquireProfileLock(userDataDir string) (*profileLock, error) {
-	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
+	if err := os.MkdirAll(userDataDir, 0o750); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(userDataDir, "go-drission.lock")

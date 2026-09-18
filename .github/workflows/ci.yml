@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 三个平台都跑：chrome_path / profile_lock 等文件带 build tag，
+        # 只跑 Linux 会漏掉 Windows 与 Unix 分支的编译错误。
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      # 静态检查配置见仓库根的 .golangci.yml（含 gofmt / goimports 格式检查）。
+      # 只在 Linux 上跑一次：lint 结论与平台无关，三个平台各跑一遍纯属浪费 runner。
+      # 版本按大版本固定，避免上游发新版引入新规则把 CI 打个措手不及。
+      - name: golangci-lint
+        if: runner.os == 'Linux'
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13
+
+      - name: go build
+        run: go build ./...
+
+      # 单元测试刻意不依赖真实浏览器，因此在 CI 的无头容器里也能跑完。
+      # -race 是必需的：Listener.Records 的数据竞争正是靠它守住回归的。
+      - name: go test -race
+        run: go test -race -timeout 5m ./...
+
+  # 端到端冒烟测试：依赖真实 Chrome，验证选择器、iframe、Session 这些
+  # 只有浏览器才能回答的行为。runner 镜像通常自带 Chrome/Edge，
+  # 但环境变动大，因此允许失败，不阻塞主流程。
+  smoke:
+    name: smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 没有浏览器时 smoke 包内的用例会自己 skip，不会误报失败。
+      - name: go test -tags smoke
+        run: go test -tags smoke -timeout 5m -v ./smoke/...

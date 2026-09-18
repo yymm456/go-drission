@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -27,6 +28,10 @@ func (p *Profile) Browser() *Browser { return p.browser }
 // 起按打开顺序递增分配，互不冲突。同名 Profile 复用同一个 Browser；首次打开时才真正
 // 连接/启动 Chrome（懒加载）。
 //
+// 并发模型：全局锁（mu）只用于保护注册表与端口分配这类瞬时操作；真正耗时的
+// OpenPage（可能要冷启动 Chrome，十几秒）放在 per-name 锁内执行。
+// 结果是「同名串行、异名并行」——多个档案可以同时打开，不会互相阻塞。
+//
 // 典型用法：
 //
 //	pm := chromium.NewProfileManager("./profiles", 9300,
@@ -44,8 +49,18 @@ type ProfileManager struct {
 
 	mu       sync.Mutex
 	profiles map[string]*Profile
-	next     int // 端口分配计数，保证同一 manager 内端口唯一
-	closed   bool
+	// inflight 为每个档案名维护一把锁，用于把耗时的 OpenPage 串行化到同名档案上；
+	// 不同名字各用各的锁，因此互不影响。
+	//
+	// 这个 map 只增不删：Close 若在此处 delete，正在持锁 OpenPage 的 goroutine 仍用旧锁，
+	// 而紧随其后的 Open 会新建一把新锁 —— 两者同时启动同一个 user-data-dir 的 Chrome，
+	// 正是 per-name 锁要避免的事。条目数等于历史档案名数量，量级可忽略，
+	// 用「少量内存」换「不可能出现双份锁」是划算的。
+	inflight map[string]*sync.Mutex
+	// free 回收打开失败时占用的端口号，优先复用，避免反复失败把端口段白白耗尽
+	free   []int
+	next   int // 端口分配计数，保证同一 manager 内端口唯一
+	closed bool
 }
 
 // NewProfileManager 创建一个 Profile 管理器。
@@ -70,7 +85,40 @@ func NewProfileManager(baseDir string, basePort int, opts ...Option) *ProfileMan
 		basePort: basePort,
 		opts:     opts,
 		profiles: map[string]*Profile{},
+		inflight: map[string]*sync.Mutex{},
 	}
+}
+
+// lockFor 返回该档案名对应的 per-name 锁（需在 mu 保护下调用）。
+func (pm *ProfileManager) lockForLocked(name string) *sync.Mutex {
+	if l, ok := pm.inflight[name]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	pm.inflight[name] = l
+	return l
+}
+
+// takePortLocked 取一个未占用的端口：优先复用回收池，否则从 basePort 递增（需在 mu 下调用）。
+func (pm *ProfileManager) takePortLocked() int {
+	if n := len(pm.free); n > 0 {
+		port := pm.free[n-1]
+		pm.free = pm.free[:n-1]
+		return port
+	}
+	port := pm.basePort + pm.next
+	pm.next++
+	return port
+}
+
+// releasePort 归还端口，供后续 Open 复用。重复归还同一端口会被忽略，避免池中出现重复项。
+func (pm *ProfileManager) releasePort(port int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if slices.Contains(pm.free, port) {
+		return
+	}
+	pm.free = append(pm.free, port)
 }
 
 // Open 打开（或复用）指定名字的 Profile，返回其 Browser 与一个可用 Tab。
@@ -81,28 +129,43 @@ func (pm *ProfileManager) Open(ctx context.Context, name string) (*Browser, *Tab
 		return nil, nil, fmt.Errorf("ProfileManager: profile 名字不能为空")
 	}
 
+	// 阶段一：在全局锁下只做瞬时操作——状态检查、分配端口、取 per-name 锁。
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
 	if pm.closed {
-		return nil, nil, fmt.Errorf("ProfileManager: 已关闭，无法再打开 Profile")
+		pm.mu.Unlock()
+		return nil, nil, fmt.Errorf("%w，无法再打开 Profile", ErrProfileClosed)
 	}
-
-	// 复用已打开的同名 Profile
 	if p, ok := pm.profiles[name]; ok && p.browser != nil {
-		tab, err := p.browser.LatestTab(ctx)
-		if err != nil {
-			tab, err = p.browser.NewTab(ctx)
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		return p.browser, tab, nil
+		browser := p.browser
+		pm.mu.Unlock()
+		return pm.reuseTab(ctx, browser)
 	}
 
 	dir := filepath.Join(pm.baseDir, sanitizeProfileName(name))
-	port := pm.basePort + pm.next
-	pm.next++
+	port := pm.takePortLocked()
+	lock := pm.lockForLocked(name)
+	pm.mu.Unlock()
+
+	// 阶段二：只在 per-name 锁内执行真正耗时的 OpenPage。
+	// 此时全局锁已释放，其他档案可以并行打开；
+	// 同名档案会在此串行，避免两个 goroutine 同时对同一 user-data-dir 启动 Chrome。
+	lock.Lock()
+	defer lock.Unlock()
+
+	// 双检：等待 per-name 锁期间，同名档案可能已被另一个 goroutine 打开
+	pm.mu.Lock()
+	if pm.closed {
+		pm.mu.Unlock()
+		pm.releasePort(port)
+		return nil, nil, fmt.Errorf("%w，无法再打开 Profile", ErrProfileClosed)
+	}
+	if p, ok := pm.profiles[name]; ok && p.browser != nil {
+		browser := p.browser
+		pm.mu.Unlock()
+		pm.releasePort(port)
+		return pm.reuseTab(ctx, browser)
+	}
+	pm.mu.Unlock()
 
 	// 复制公共配置，再强制覆盖为该 Profile 独立的用户数据目录
 	opts := make([]Option, 0, len(pm.opts)+1)
@@ -111,12 +174,26 @@ func (pm *ProfileManager) Open(ctx context.Context, name string) (*Browser, *Tab
 
 	browser, tab, err := OpenPage(ctx, port, opts...)
 	if err != nil {
-		// 打开失败则回收刚分配的端口序号，避免端口空洞
-		pm.next--
+		pm.releasePort(port)
 		return nil, nil, fmt.Errorf("打开 Profile %q 失败: %w", name, err)
 	}
 
+	pm.mu.Lock()
 	pm.profiles[name] = &Profile{Name: name, Dir: dir, Port: port, browser: browser}
+	pm.mu.Unlock()
+	return browser, tab, nil
+}
+
+// reuseTab 复用已打开的浏览器：优先取最新标签页，没有就新建。
+// 不持全局锁——LatestTab / NewTab 内部会走 CDP 调用。
+func (pm *ProfileManager) reuseTab(ctx context.Context, browser *Browser) (*Browser, *Tab, error) {
+	tab, err := browser.LatestTab(ctx)
+	if err != nil {
+		tab, err = browser.NewTab(ctx)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
 	return browser, tab, nil
 }
 
@@ -146,29 +223,37 @@ func (pm *ProfileManager) Names() []string {
 
 // Close 关闭指定名字的 Profile 浏览器（若是自启的 Chrome 则结束进程），
 // 磁盘上的用户数据目录会保留，下次同名 Open 仍可恢复登录态。
+//
+// 注意不清理 pm.inflight：理由见 inflight 字段的说明。
 func (pm *ProfileManager) Close(name string) {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	if p, ok := pm.profiles[name]; ok {
-		if p.browser != nil {
-			p.browser.Close()
-		}
+	p, ok := pm.profiles[name]
+	if ok {
 		delete(pm.profiles, name)
+	}
+	pm.mu.Unlock()
+
+	// 在锁外关闭：Browser.Close 会走 CDP 与进程回收，耗时不短
+	if ok && p.browser != nil {
+		p.browser.Close()
 	}
 }
 
 // CloseAll 关闭所有已打开的 Profile 浏览器。磁盘用户数据目录全部保留。
 func (pm *ProfileManager) CloseAll() {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
 	pm.closed = true
+	opened := make([]*Profile, 0, len(pm.profiles))
 	for name, p := range pm.profiles {
+		opened = append(opened, p)
+		delete(pm.profiles, name)
+	}
+	pm.mu.Unlock()
+
+	for _, p := range opened {
 		if p.browser != nil {
 			p.browser.Close()
 		}
-		delete(pm.profiles, name)
 	}
 }
 

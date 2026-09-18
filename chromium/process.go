@@ -19,7 +19,13 @@ func killProcessTree(cmd *exec.Cmd) {
 	pid := cmd.Process.Pid
 
 	if runtime.GOOS == "windows" {
-		// /F 强制结束，/T 连同子进程一起结束
+		// /F 强制结束，/T 连同子进程一起结束。
+		//
+		// 刻意不用 exec.CommandContext：这是 Close 路径上的清理动作，必须执行到底。
+		// 若把调用方的 ctx 接进来，恰好 ctx 已过期时 taskkill 会被直接放弃，
+		// 残留的子进程会继续占着 user-data-dir 的文件锁。
+		//
+		//nolint:noctx // 见上：清理动作不可取消，且 killProcessTree 只拿到 *exec.Cmd
 		kill := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(pid))
 		if err := kill.Run(); err == nil {
 			_ = cmd.Wait()

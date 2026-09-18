@@ -1,0 +1,10 @@
+# .gitattributes 自身也用 LF，避免下次被 Git 改回 CRLF
+.gitattributes text eol=lf
+# Go 源文件统一使用 LF：保持仓库内单一换行风格，避免跨平台协作时产生整文件 diff。
+# （注：gofmt 本身能正确处理 CRLF，这里统一只是为了 diff 干净。）
+*.go text eol=lf
+
+# 文档与配置同样统一 LF，避免跨平台协作时产生整文件的行尾 diff
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

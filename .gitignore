@@ -12,6 +12,7 @@ chrome-automation
 *.out
 coverage.*
 
+
 # 调试残留
 *.bak
 *.tmp
@@ -32,3 +33,6 @@ go.work.sum
 .vscode/
 *.swp
 .DS_Store
+.workbuddy
+# 记忆文件
+CODE_REVIEW.md

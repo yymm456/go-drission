@@ -1,6 +1,7 @@
 package chromium
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -8,27 +9,58 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
-func isPortAlive(port int) bool {
+// noProxyTransport 是绕过系统代理的 HTTP transport。
+//
+// 调试端口与 /json 端点都跑在本机回环地址上，必须直连：一旦走了 HTTP_PROXY
+// 环境变量指向的代理，探测请求会被转发到外部代理，导致「明明活着却探测失败」，
+// 进而每次都去重新启动一个 Chrome。
+var noProxyTransport = &http.Transport{
+	Proxy:                 nil,
+	DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+	ResponseHeaderTimeout: 3 * time.Second,
+}
+
+// noProxyClient 是访问本机 CDP HTTP 端点（/json、/json/version）统一使用的 client。
+// 复用同一个实例以便连接被复用；超时策略与 isPortAlive 保持一致。
+var noProxyClient = &http.Client{Timeout: 5 * time.Second, Transport: noProxyTransport}
+
+// isPortAlive 判断指定端口上是否有一个可用的 Chrome DevTools 端点。
+// 探测过程受 ctx 约束：ctx 取消或超时立即返回 false，不会拖慢调用方。
+func isPortAlive(ctx context.Context, port int) bool {
+	if err := ctx.Err(); err != nil {
+		return false
+	}
+
 	// 1. 快速 TCP 探测
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(probeCtx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	// 探测用的连接，关闭失败无补救手段，也没必要上报
+	_ = conn.Close()
 
 	// 2. 确认是 Chrome DevTools 端点，而非其他进程恰好占用端口
-	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/json/version", port))
+	client := &http.Client{Timeout: 3 * time.Second, Transport: noProxyTransport}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/json/version", port), nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return false
 	}
 	var v struct {
@@ -40,8 +72,30 @@ func isPortAlive(port int) bool {
 	return v.Browser != ""
 }
 
-// launchChrome 启动 Chrome，应用全部配置项，返回 exec.Cmd 以便调用方跟踪进程
-func launchChrome(port int, o *options) (*exec.Cmd, error) {
+// resolveChromePath 确定最终用于启动的浏览器可执行文件。
+//
+// 规则：调用方用 WithChromePath 显式指定时，路径不存在就直接报错（不悄悄回退，
+// 否则拼写错误会被静默掩盖）；未指定时才走自动发现，找不到则连同搜索过的
+// 全部位置一起返回，方便调用方一眼看出该装到哪。
+func resolveChromePath(o *options) (string, error) {
+	if o.chromePathSet {
+		if !fileExists(o.chromePath) {
+			return "", fmt.Errorf("chromium: WithChromePath 指定的浏览器不存在: %s", o.chromePath)
+		}
+		return o.chromePath, nil
+	}
+	if p := findChrome(); p != "" {
+		return p, nil
+	}
+	tried := SearchedChromePaths()
+	return "", fmt.Errorf("%w：已搜索 %d 个位置:\n  %s\n"+
+		"请用 WithChromePath(\"<实际路径>\") 显式指定",
+		ErrChromeNotFound, len(tried), strings.Join(tried, "\n  "))
+}
+
+// launchChrome 启动 Chrome，应用全部配置项，返回 exec.Cmd 以便调用方跟踪进程。
+// ctx 控制「等待调试端口就绪」这一阶段：ctx 取消/到期即放弃等待并杀掉已启动的进程。
+func launchChrome(ctx context.Context, port int, o *options) (*exec.Cmd, error) {
 	args := []string{
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		"--user-data-dir=" + o.userDataDir,
@@ -50,6 +104,28 @@ func launchChrome(port int, o *options) (*exec.Cmd, error) {
 		"--noerrdialogs", // 自动化场景不弹模态错误框（如数据目录占用），失败统一走返回错误
 	}
 
+	// Chrome 111+ 会校验 WebSocket 握手时的 Host/Origin 头，
+	// 不加这条在高版本 Chrome 上会出现连接被拒（403 / Rejected an incoming WebSocket connection）。
+	args = append(args, "--remote-allow-origins=*")
+
+	// 服务器/容器上 /dev/shm 通常只有 64MB，不加这条 Chrome 会随机崩溃
+	args = append(args, "--disable-dev-shm-usage")
+
+	if o.antiDetect {
+		// 抹掉最明显的自动化痕迹：
+		//   --disable-blink-features=AutomationControlled  去掉 navigator.webdriver 的底层标记来源
+		//   --excludeSwitches=enable-automation            去掉「正受到自动测试软件的控制」提示条
+		// navigator.webdriver 本身由新建标签页时的初始化脚本抹除（见 anti_detect.go）
+		args = append(args,
+			"--disable-blink-features=AutomationControlled",
+			"--excludeSwitches=enable-automation",
+			"--disable-infobars",
+			"--mute-audio",
+		)
+	}
+	if o.lang != "" {
+		args = append(args, "--lang="+o.lang)
+	}
 	if o.headless {
 		args = append(args, "--headless=new")
 	}
@@ -70,38 +146,51 @@ func launchChrome(port int, o *options) (*exec.Cmd, error) {
 			args = append(args, "--"+f.name+"="+f.value)
 		}
 	}
-	cmd := exec.Command(o.chromePath, args...)
+
+	chromePath, err := resolveChromePath(o)
+	if err != nil {
+		return nil, err
+	}
+	// 刻意不用 exec.CommandContext：Chrome 的生命周期归 Browser 管（Close 里杀进程树），
+	// 不该跟着连接握手的 ctx 走。若绑上 ctx，调用方在某个操作超时后取消派生 ctx，
+	// 就会把正在使用的浏览器一起杀掉。
+	//
+	//nolint:noctx // 见上：进程生命周期由 Browser 管理，不随调用方 ctx 取消
+	cmd := exec.Command(chromePath, args...)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
 	}
 
-	// 等待调试端口就绪：超时时长遵循 connectTimeout（默认 10s）。
+	// 等待调试端口就绪：受 ctx 与 connectTimeout 双重约束，取先到者。
 	// 首次启动全新用户数据目录时 Chrome 冷启动较慢，可通过 WithConnectTimeout 放大。
 	timeout := o.connectTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	const interval = 200 * time.Millisecond
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if isPortAlive(port) {
-			return cmd, nil
-		}
-		time.Sleep(interval)
-	}
-	// 端口未就绪：杀掉已启动的整棵进程树，避免留下僵尸 Chrome 及其子进程占用 profile 目录
-	killProcessTree(cmd)
-	return nil, fmt.Errorf("chrome 已启动，但端口 %d 未在 %s 内就绪", port, timeout)
-}
+	waitCtx, cancelWait := context.WithTimeout(ctx, timeout)
+	defer cancelWait()
 
-func defaultChromePath() string {
-	switch runtime.GOOS {
-	case "windows":
-		return `C:\Program Files\Google\Chrome\Application\chrome.exe`
-	case "darwin":
-		return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-	default:
-		return "google-chrome"
+	const interval = 200 * time.Millisecond
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	// 先立刻探一次，避免刚启动就被迫白等一个间隔
+	if isPortAlive(waitCtx, port) {
+		return cmd, nil
+	}
+	for {
+		select {
+		case <-waitCtx.Done():
+			// 端口未就绪：杀掉已启动的整棵进程树，避免留下僵尸 Chrome 及其子进程占用 profile 目录
+			killProcessTree(cmd)
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("等待端口 %d 就绪被取消: %w", port, err)
+			}
+			return nil, fmt.Errorf("chrome 已启动，但端口 %d 未在 %s 内就绪", port, timeout)
+		case <-ticker.C:
+			if isPortAlive(waitCtx, port) {
+				return cmd, nil
+			}
+		}
 	}
 }
 

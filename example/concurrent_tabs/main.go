@@ -79,7 +79,7 @@ func main() {
 			}
 			_ = tab.Wait().Ready().Timeout(15 * time.Second).Do(taskCtx)
 			title, _ := tab.Title(taskCtx)
-			nodes, _ := tab.Count(taskCtx, "*")
+			nodes, _ := tab.EleCSS("*").Count(taskCtx)
 			u, _ := tab.CurrentURL(taskCtx)
 			results[i] = fmt.Sprintf("%s: 标题=%q DOM节点=%d 地址=%s", sites[i].name, title, nodes, u)
 		}(i)
