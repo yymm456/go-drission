@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	cdproto "github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/cdp"
+	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
@@ -30,7 +30,7 @@ import (
 // （选择器 / URL / name）自动重新定位一次，重新定位也失败才返回 ErrFrameDetached。
 // 框架内的元素操作走 FrameElement（由 Frame.Ele* 返回），都是 JS 语义：Click 走 el.click()，不做可见性检查。
 type Frame struct {
-	id      cdproto.FrameID
+	id      cdp.FrameID
 	url     string
 	name    string
 	parent  *Tab
@@ -49,7 +49,7 @@ type frameLocator struct {
 }
 
 // ID 返回该框架的 CDP 框架 ID。
-func (f *Frame) ID() cdproto.FrameID { return f.id }
+func (f *Frame) ID() cdp.FrameID { return f.id }
 
 // URL 返回该框架当前的地址（构造时的快照，导航后会变，请用 URLNow 重新获取）。
 func (f *Frame) URL() string { return f.url }
@@ -61,10 +61,10 @@ func (f *Frame) Name() string { return f.name }
 
 // frameInfo 是打平后的框架信息。
 type frameInfo struct {
-	ID       cdproto.FrameID
+	ID       cdp.FrameID
 	URL      string
 	Name     string
-	ParentID cdproto.FrameID
+	ParentID cdp.FrameID
 }
 
 // flattenFrames 把嵌套的框架树摊平成一维列表。
@@ -92,7 +92,7 @@ func (t *Tab) Frames(ctx context.Context) ([]*Frame, error) {
 
 	var out []*Frame
 	for _, info := range infos {
-		if info.ID == cdproto.FrameID("") {
+		if info.ID == cdp.FrameID("") {
 			continue
 		}
 		f, err := t.bindFrame(ctx, info, frameLocator{name: info.Name, urlSub: info.URL})
@@ -267,9 +267,9 @@ func (f *Frame) eval(ctx context.Context, js string) (any, error) {
 			if exception != nil {
 				// 用哨兵包一层：调用方能用 errors.Is 判断是脚本报错而非环境问题，
 				// 上层的重试逻辑也据此拒绝重试。
-				return fmt.Errorf("%w: %s", errs.ErrFrameScript, cdp.ExceptionText(exception))
+				return fmt.Errorf("%w: %s", errs.ErrFrameScript, cdpkit.ExceptionText(exception))
 			}
-			res = cdp.DecodeRemoteValue(v)
+			res = cdpkit.DecodeRemoteValue(v)
 			return nil
 		}))
 	}
@@ -343,7 +343,7 @@ func (f *Frame) recreateWorld(ctx context.Context) (runtime.ExecutionContextID, 
 
 // createIsolatedWorld 在指定框架里建立一个 isolated world，返回其 execution context ID。
 // bindFrame 与 recreateWorld 共用同一段 CDP 调用（同一个操作的两种时机）。
-func (t *Tab) createIsolatedWorld(ctx context.Context, id cdproto.FrameID) (runtime.ExecutionContextID, error) {
+func (t *Tab) createIsolatedWorld(ctx context.Context, id cdp.FrameID) (runtime.ExecutionContextID, error) {
 	var worldID runtime.ExecutionContextID
 	err := t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 		res, e := page.CreateIsolatedWorld(id).

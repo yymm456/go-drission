@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	cdproto "github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -40,7 +40,7 @@ func (b *Browser) listTargets(ctx context.Context) ([]targetInfo, error) {
 
 	var infos []*target.Info
 	err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		bexec := cdproto.WithExecutor(c, chromedp.FromContext(c).Browser)
+		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
 		var e error
 		infos, e = target.GetTargets().Do(bexec)
 		return e

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	cdproto "github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
@@ -90,11 +90,11 @@ func cookiePath(c Cookie) string {
 }
 
 // cookieExpires 把 Cookie.Expires（Unix 秒）转成 CDP 时间戳；<= 0 表示会话 Cookie，返回 nil。
-func cookieExpires(c Cookie) *cdproto.TimeSinceEpoch {
+func cookieExpires(c Cookie) *cdp.TimeSinceEpoch {
 	if c.Expires <= 0 {
 		return nil
 	}
-	exp := cdproto.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
+	exp := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
 	return &exp
 }
 

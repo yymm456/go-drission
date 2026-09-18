@@ -1,11 +1,11 @@
-// Package cdp 收敛「发 CDP 命令时的上下文纪律」与 CDP 返回值解码这两类基础设施。
+// Package cdpkit 收敛「发 CDP 命令时的上下文纪律」与 CDP 返回值解码这两类基础设施。
 //
 // 它不依赖本库任何其它包，可以被所有实现包引用；门面 chromium 不转发它，
 // 因此使用者在外部看不到这些符号。
 //
 // 这里放的都是「跨包共用的规则」，而不是杂物间：每一条都有明确的历史缺陷作为背景
 // （尤其是 RunAbandonable，见其注释）。
-package cdp
+package cdpkit
 
 import (
 	"context"

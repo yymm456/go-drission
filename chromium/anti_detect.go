@@ -5,7 +5,7 @@ import (
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
-	"github.com/yymm456/go-drission/chromium/internal/cdp"
+	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
 	"github.com/yymm456/go-drission/chromium/internal/config"
 )
 
@@ -76,7 +76,7 @@ func injectAntiDetect(ctx context.Context, o *config.Options) error {
 		return nil
 	}
 
-	runCtx, cancel := cdp.WithDefaultTimeout(ctx, cdp.DefaultCallTimeout)
+	runCtx, cancel := cdpkit.WithDefaultTimeout(ctx, cdpkit.DefaultCallTimeout)
 	defer cancel()
 
 	return chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
