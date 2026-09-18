@@ -26,28 +26,43 @@ go get github.com/yymm456/go-drission@latest
 go-drission/
 ├── go.mod
 ├── .golangci.yml  静态检查配置（golangci-lint v2）
-├── chromium/              库主体：浏览器自动化
-│   ├── browser.go       Browser：连接、标签页管理、OpenPage
-│   ├── context.go       BrowserContext：单浏览器内多账户隔离上下文
-│   ├── profile.go       ProfileManager：多账户命名档案（独立进程）隔离
-│   ├── profile_marker.go 档案标记文件：固定端口接管前校验「这浏览器是不是我的」
-│   ├── tab.go           Tab：导航、截图、Eval、标签页与窗口管理
-│   ├── element.go       Element：查询与操作分离（Ele*/EleCSS/... → Click/SendKeys/...）
-│   ├── wait.go          WaitBuilder：链式等待（页面级 tab.Wait() / 元素级 el.Wait()）
-│   ├── launch.go        端口探测、Chrome 启动
-│   ├── process.go       子进程管理（Chrome PID、优雅退出）
-│   ├── chrome_path.go   浏览器可执行文件自动发现（分平台）
-│   ├── anti_detect.go   反自动化检测：启动参数 + 页面注入脚本
-│   ├── selector.go      Selector：CSS / XPath / ID / JS 四种构造器
-│   ├── frame.go         Frame：iframe 定位与跨域操作
-│   ├── errors.go        哨兵错误（ErrClosed / ErrNotConnected / ErrBrowserMismatch 等）
-│   ├── targets.go       HTTP /json 查询与标签页同步
-│   ├── options.go       函数式配置项 WithXxx（含 WithLogger）
-│   ├── cookies.go       Cookie 注入 / 读取 / 导入导出
-│   ├── listen.go        Network 域被动监听（Listener / Record）
+├── chromium/  库主体：浏览器自动化（门面，只做别名与转发）
+│   ├── api.go  门面：类型别名 + 包级函数转发（对外的全部公开 API 都在这里）
+│   └── doc.go  包文档：分层结构、ctx 约定、定位与操作分离
+├── chromium/internal/browser/  Browser / BrowserContext / 标签页生命周期
+│   ├── browser.go  Browser：连接、标签页管理、OpenPage
+│   ├── context.go  BrowserContext：单浏览器内多账户隔离上下文
+│   └── targets.go  target 列表查询与标签页同步
+├── chromium/internal/page/  页面对象图：Tab / Element / Frame / Selector / Wait
+│   ├── tab.go  Tab：导航、截图、Eval、标签页与窗口管理
+│   ├── element.go  Element：查询与操作分离（Ele*/EleCSS/... → Click/SendKeys/...）
+│   ├── wait.go  WaitBuilder：链式等待（页面级 tab.Wait() / 元素级 el.Wait()）
+│   ├── selector.go  Selector：CSS / XPath / ID / JS 四种构造器
+│   ├── frame.go / frame_element.go  Frame：iframe 定位与跨域操作
+│   ├── anti_detect.go  反自动化检测：页面注入脚本（启动参数部分在 chrome/launch.go）
+│   ├── cookies.go  Tab 上的 Cookie 方法（纯逻辑在 cookie/）
+│   ├── listen.go  Tab.Listen 工厂（监听实体在 network/）
+│   └── wiring.go  门面与 page 之间的接线面（只给包内与 browser 用，不对外）
+├── chromium/internal/network/  网络被动监听
+│   ├── listener.go / events.go  Listener：Network 域事件订阅与生命周期
+│   └── record.go / match.go  Record：请求/响应记录与 URL 匹配
+├── chromium/internal/cookie/  Cookie 的纯逻辑（不依赖浏览器）
+│   └── cookie.go  Cookie / CookieSource：校验、解析、参数构造、导入导出
+├── chromium/internal/chrome/  浏览器进程与本机资源
+│   ├── launch.go / probe.go  端口探测与 Chrome 启动
+│   ├── process.go  子进程管理（Chrome PID、优雅退出）
+│   ├── path.go / path_windows.go / path_unix.go  浏览器可执行文件自动发现（分平台）
+│   ├── port.go  空闲端口分配
 │   ├── lock_windows.go / lock_other.go  跨进程 user-data-dir 排他锁
-│   ├── port.go          空闲端口分配
-│   └── util.go          writeFile、contains、超时兜底、CDP 值解码助手
+│   └── marker.go  档案标记文件：固定端口接管前校验「这浏览器是不是我的」
+├── chromium/internal/profile/  多账户命名档案
+│   └── profile.go  Profile / ProfileManager：独立目录 + 独立端口的进程级隔离
+├── chromium/internal/config/  配置
+│   └── options.go  Options 与函数式配置项 WithXxx
+├── chromium/internal/cdpkit/  CDP 通用助手
+│   └── ctx.go / value.go / budget.go  上下文派生、CDP 值解码、调用超时预算
+├── chromium/internal/errs/  错误
+│   └── errors.go  全部哨兵错误（ErrClosed / ErrNotConnected / ErrBrowserMismatch 等）
 ├── session/               纯 HTTP 模式（对标 SessionPage）
 │   ├── session.go      Session：net/http 封装，Get/Post/PostForm/PostJSON/Do
 │   ├── jar.go          自研 CookieJar：并发安全，全量导出 / 导入，支持 CHIPS 分区 Cookie
@@ -71,39 +86,15 @@ go-drission/
     └── cookie_relay/      免登录：Session 纯 HTTP 登录 → 浏览器直接接管
 ```
 
+> `chromium/` 本身**不含任何实现**：它是门面，只做「类型别名 + 包级函数转发」。
+> 实现全部在 `chromium/internal/*`，由 Go 的 internal 规则保证外部拿不到，
+> 因此内部怎么拆都不会影响调用方 —— 你只要 `import ".../chromium"`。
+>
+> 依赖只允许单向：`browser → page/chrome/cdpkit/config/errs`、
+> `profile → browser`、`page → cookie/network/cdpkit/errs`，无环。
+
 > 模块根目录**没有** `package main`：`go install github.com/yymm456/go-drission@latest` 不会
 > 装出一个会去真实站点登录的 demo 程序。调试入口单独放在 `cmd/demo/`。
-
-
----
-
-## 选择器 Selector
-
-所有定位类 API 收的都不是裸字符串，而是 `chromium.Selector`。四个构造器覆盖四种定位方式：
-
-| 构造器 | 底层 | 说明 |
-|---|---|---|
-| `chromium.CSS(sel)` | `chromedp.ByQuery` | CSS 选择器，默认方式 |
-| `chromium.XPath(expr)` | `chromedp.BySearch` | XPath 表达式 |
-| `chromium.ID(id)` | `chromedp.ByID` | 按元素 id |
-| `chromium.JS(expr)` | `chromedp.ByJSPath` | **一段返回元素的 JS 表达式**（不是 DOM 树路径） |
-
-每种选择器都有对应的 `Tab` 快捷入口，返回一个 `*Element`（详见下一节）：
-
-| 入口 | 等价于 |
-|---|---|
-| `tab.EleCSS("#submit")` | `tab.Ele(chromium.CSS("#submit"))` |
-| `tab.EleID("kw")` | `tab.Ele(chromium.ID("kw"))` |
-| `tab.EleXPath("//a")` | `tab.Ele(chromium.XPath("//a"))` |
-| `tab.EleJS("document.querySelector(...)")` | `tab.Ele(chromium.JS(...))` |
-| `tab.Ele(sel)` | 显式传入一个 `chromium.Selector` |
-
-```go
-tab.EleCSS("#submit").Click(ctx)
-tab.EleXPath("//div[@class='item']/span").Text(ctx)
-tab.EleID("kw").SetValue(ctx, "golang")
-```
-
 `JS()` 是穿透 Shadow DOM、取匿名嵌套节点这类「选择器表达不了」场景的逃生口，
 表达式的求值结果必须是一个 DOM 元素：
 
