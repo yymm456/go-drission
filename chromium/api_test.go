@@ -2,6 +2,7 @@ package chromium
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/yymm456/go-drission/chromium/internal/errs"
@@ -114,6 +115,47 @@ func TestErrorAliasesShareIdentityWithErrs(t *testing.T) {
 		}
 		if !errors.Is(tc.pub, tc.inner) {
 			t.Errorf("errors.Is(公开别名, %s 内部值) 为 false——别名不再是同一个值", tc.name)
+		}
+	}
+}
+
+// TestCookieJSONTagsAreFrozen 钉住 Cookie 的字段名、JSON tag 与类型。
+//
+// 这是一条**跨包契约**：session.CookieItem 用同一套字段名，浏览器导出的 cookies.json
+// 要能被 session 读入，session 存盘的也要能被浏览器导入（设计文档 §8.2 第 7 条）。
+// 别名化（type Cookie = cookie.Cookie）之后，字段列表不再出现在
+// `go doc -all ./chromium` 的输出里，API 闸门看不见它，只能靠这个用例守。
+//
+// 它守的是「契约」而不是「实现」：internal/cookie 里改个字段名，这里就会红——
+// 那正是我们要的信号。
+func TestCookieJSONTagsAreFrozen(t *testing.T) {
+	want := map[string][2]string{
+		"Name":     {"name", "string"},
+		"Value":    {"value", "string"},
+		"Domain":   {"domain", "string"},
+		"Path":     {"path", "string"},
+		"HTTPOnly": {"http_only", "bool"},
+		"Secure":   {"secure", "bool"},
+		"SameSite": {"same_site", "string"},
+		"Expires":  {"expires", "float64"},
+	}
+
+	typ := reflect.TypeFor[Cookie]()
+	if n := len(want); typ.NumField() != n {
+		t.Fatalf("Cookie 的字段数变了：期望 %d，实际 %d（跨包 JSON 契约可能已被破坏）",
+			n, typ.NumField())
+	}
+	for f := range typ.Fields() {
+		exp, ok := want[f.Name]
+		if !ok {
+			t.Errorf("出现了预期之外的字段 %s", f.Name)
+			continue
+		}
+		if tag := f.Tag.Get("json"); tag != exp[0] {
+			t.Errorf("字段 %s 的 json tag = %q，期望 %q", f.Name, tag, exp[0])
+		}
+		if kind := f.Type.Kind().String(); kind != exp[1] {
+			t.Errorf("字段 %s 的类型 = %s，期望 %s", f.Name, kind, exp[1])
 		}
 	}
 }

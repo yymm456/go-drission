@@ -9,48 +9,11 @@ import (
 	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
 )
 
-// ---------- Cookie 校验 ----------
-
-// TestValidateCookieSameSiteNoneWithoutSecure 守住「注释承诺的第三项校验实际不存在」。
+// ---------- Cookie 注入前校验（CDP 之前必须拦住） ----------
 //
-// errors.go 里 ErrInvalidCookie 的注释写明包含「SameSite=None 却没有 Secure」，
-// 而 validateCookie 只检查了 name / domain。浏览器侧确实会拒收这种组合，但
-// Network.setCookie 本身不报错——库把这个结果当成成功返回，调用方拿到的是
-// 「全部注入成功」的假象，登录态却少了几条。必须在发起 CDP 之前拦成显式错误。
-func TestValidateCookieSameSiteNoneWithoutSecure(t *testing.T) {
-	bad := []Cookie{
-		{Name: "none", Value: "1", Domain: "example.com", SameSite: "None"},
-		{Name: "none-lower", Value: "1", Domain: "example.com", SameSite: "none"},
-		{Name: "none-padded", Value: "1", Domain: "example.com", SameSite: "  None  "},
-	}
-	for i, c := range bad {
-		if err := validateCookie(c, i+1); !errors.Is(err, ErrInvalidCookie) {
-			t.Errorf("Cookie %q（SameSite=%q, Secure=false）应报 ErrInvalidCookie，实际 %v",
-				c.Name, c.SameSite, err)
-		}
-	}
-
-	good := []Cookie{
-		{Name: "none-secure", Value: "1", Domain: "example.com", SameSite: "None", Secure: true},
-		{Name: "none-secure-lower", Value: "1", Domain: "example.com", SameSite: "none", Secure: true},
-		{Name: "lax", Value: "1", Domain: "example.com", SameSite: "Lax"},
-		{Name: "strict", Value: "1", Domain: "example.com", SameSite: "Strict"},
-		{Name: "unset", Value: "1", Domain: "example.com"},
-	}
-	for i, c := range good {
-		if err := validateCookie(c, i+1); err != nil {
-			t.Errorf("Cookie %q 不应被误拦：%v", c.Name, err)
-		}
-	}
-
-	// 前两项校验不能被这轮改动破坏
-	if err := validateCookie(Cookie{Domain: "example.com"}, 1); !errors.Is(err, ErrInvalidCookie) {
-		t.Errorf("缺 name 应报 ErrInvalidCookie，实际 %v", err)
-	}
-	if err := validateCookie(Cookie{Name: "a"}, 1); !errors.Is(err, ErrInvalidCookie) {
-		t.Errorf("缺 domain 应报 ErrInvalidCookie，实际 %v", err)
-	}
-}
+// 校验逻辑本身（含「SameSite=None 必须带 Secure」）已随 S3 下沉到 internal/cookie，
+// 纯逻辑用例见 internal/cookie/cookie_test.go 的 TestValidateCookieSameSiteNoneWithoutSecure；
+// 这里只守一件事：Tab 方法确实在发起 CDP 调用之前就把它拦下来了。
 
 // TestSetCookiesValidatesBeforeCDP 确认校验发生在 CDP 调用之前。
 //

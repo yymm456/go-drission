@@ -16,11 +16,32 @@ import (
 
 	"github.com/yymm456/go-drission/chromium/internal/chrome"
 	"github.com/yymm456/go-drission/chromium/internal/config"
+	"github.com/yymm456/go-drission/chromium/internal/cookie"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
 // Option 是函数式配置项
 type Option = config.Option
+
+// Cookie 描述一个要注入的 Cookie。
+//
+// JSON 字段与 session.CookieItem 完全一致，因此两侧导出的 cookies.json
+// 可以互相导入——这正是「Session 抓包拿 Cookie → 浏览器免登录」的通道。
+//
+// 字段定义见 internal/cookie。别名与它指向的是同一个类型，不做任何转换，
+// 因此 `*Cookie` 可直接互换；字段名 / 类型 / JSON tag 由 api_test.go 的
+// TestCookieJSONTagsAreFrozen 钉住（别名化之后它们不再出现在 go doc 输出里）。
+type Cookie = cookie.Cookie
+
+// CookieSource 是「能导出自己的 Cookie JSON」的类型。
+//
+// session.Jar 与 *session.Jar 天然满足该接口（ExportJSON() ([]byte, error)），
+// 因此可以从浏览器侧这样接力，而 chromium 包无需反向依赖 session 包：
+//
+//	s := session.New()
+//	s.PostForm(ctx, loginURL, form)          // 纯 HTTP 登录，拿到 Cookie
+//	tab.LoginWithCookies(ctx, homeURL, s.Jar()) // 把登录态交给浏览器，免登录
+type CookieSource = cookie.CookieSource
 
 // 对外暴露的哨兵错误；与 internal/errs 里的是同一个值（同一指针），
 // 因此 errors.Is 在「内部包返回、外部包判断」之间照旧成立。
@@ -153,7 +174,7 @@ func WithFlag(name, value string) Option { return config.WithFlag(name, value) }
 //	chromium.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 func WithLogger(l *slog.Logger) Option { return config.WithLogger(l) }
 
-// 以下两个函数是 S2 下沉到 internal/chrome 后需要门面转发的公开 API。
+// 以下是 S2 下沉到 internal/chrome 后需要门面转发的公开 API。
 // 实现见 internal/chrome/path.go，这里只做转发，保持对外契约与文档不变。
 
 // SearchedChromePaths 返回最近一次自动查找时枚举过的全部路径。
@@ -163,3 +184,9 @@ func SearchedChromePaths() []string { return chrome.SearchedChromePaths() }
 // RefreshChromePath 丢弃缓存的浏览器路径，下次查找时重新枚举。
 // 场景：进程启动后用户才安装浏览器，或安装位置发生了变化。
 func RefreshChromePath() { chrome.RefreshChromePath() }
+
+// 以下是 S3 下沉到 internal/cookie 后需要门面转发的公开 API。
+
+// ParseCookiesJSON 解析 Cookie JSON（支持 chrome 扩展导出 / 本包与 session 包导出的格式）。
+// 顶层必须是数组；空内容返回空切片而不是错误。
+func ParseCookiesJSON(data []byte) ([]Cookie, error) { return cookie.ParseCookiesJSON(data) }
