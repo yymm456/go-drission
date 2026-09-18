@@ -1,4 +1,4 @@
-package chromium
+package chrome
 
 import (
 	"encoding/json"
@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/yymm456/go-drission/chromium/internal/config"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
@@ -36,11 +37,11 @@ type profileMarker struct {
 	PID    int `json:"pid,omitempty"`
 }
 
-// writeProfileMarker 在用户数据目录里写下「我们刚用这个端口启动了 Chrome」。
+// WriteProfileMarker 在用户数据目录里写下「我们刚用这个端口启动了 Chrome」。
 //
 // 失败只记日志：目录只读、权限受限都不该阻断启动本身，最坏结果是下次接管时
 // 核实不了（那时会走「无法证实」分支）。
-func writeProfileMarker(dir string, port, pid int) error {
+func WriteProfileMarker(dir string, port, pid int) error {
 	if dir == "" {
 		return nil
 	}
@@ -68,7 +69,7 @@ func readProfileMarker(dir string) (profileMarker, bool) {
 	return m, true
 }
 
-// verifyPortOwner 核实端口上已有的 Chrome 是否就是调用方期望的那一个。
+// VerifyPortOwner 核实端口上已有的 Chrome 是否就是调用方期望的那一个。
 //
 // 判定结果分三种：
 //
@@ -84,8 +85,7 @@ func readProfileMarker(dir string) (profileMarker, bool) {
 //     这一被广泛依赖的行为（例如接管自己手动开启 9222 的 Chrome）。
 //
 // 想无条件跳过请用 WithTrustExistingBrowser。
-func (b *Browser) verifyPortOwner() error {
-	o := b.opts
+func VerifyPortOwner(o *config.Options, port int) error {
 	if o.TrustExistingBrowser {
 		return nil
 	}
@@ -94,29 +94,29 @@ func (b *Browser) verifyPortOwner() error {
 	marker, ok := readProfileMarker(dir)
 
 	switch {
-	case ok && marker.Port == b.port:
-		o.Logger.Info("已核实端口上的 Chrome 属于本档案", "port", b.port, "dir", dir)
+	case ok && marker.Port == port:
+		o.Logger.Info("已核实端口上的 Chrome 属于本档案", "port", port, "dir", dir)
 		return nil
 
-	case ok && marker.Port != b.port:
+	case ok && marker.Port != port:
 		return fmt.Errorf(
 			"%w：用户数据目录 %s 的档案标记记录的是端口 %d，但本次要连接的是端口 %d。"+
 				"这个端口上的浏览器很可能属于别的档案（或别的程序）。"+
 				"确认要接管请改端口，或加 WithTrustExistingBrowser() 显式跳过核实",
-			errs.ErrBrowserMismatch, dir, marker.Port, b.port)
+			errs.ErrBrowserMismatch, dir, marker.Port, port)
 
 	case o.UserDataDirSet:
 		return fmt.Errorf(
 			"%w：你指定了 WithUserDataDir(%q)，但该目录里没有本库写入的档案标记，"+
 				"因此无法确认端口 %d 上的浏览器真的在用它。"+
 				"若那是你手动启动的 Chrome 且确定就是它，加 WithTrustExistingBrowser() 跳过核实",
-			errs.ErrBrowserMismatch, dir, b.port)
+			errs.ErrBrowserMismatch, dir, port)
 
 	default:
 		// 默认临时目录 + 无标记：接管对象本就无法确定，但这是「连上我自己那个 9222」
 		// 的常见用法，不能因为核实不了就报错，只把风险讲清楚。
 		o.Logger.Warn("端口上已有 Chrome 且无法核实其用户数据目录，将直接接管",
-			"port", b.port, "expectedDir", dir)
+			"port", port, "expectedDir", dir)
 		return nil
 	}
 }

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package chromium
+package chrome
 
 import (
 	"os"

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/yymm456/go-drission/chromium/internal/chrome"
 	"github.com/yymm456/go-drission/chromium/internal/config"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
@@ -98,7 +99,7 @@ func WithChromePath(path string) Option { return config.WithChromePath(path) }
 // WithUserDataDir 指定用户数据目录（持久化登录态）。
 //
 // 显式指定后，连接阶段会核实端口上已有的 Chrome 是否确实在使用这个目录
-// （见 verifyPortOwner）；核实不了会返回 ErrBrowserMismatch，而不是安静地接管
+// （见 chrome.VerifyPortOwner）；核实不了会返回 ErrBrowserMismatch，而不是安静地接管
 // 别人的浏览器——那会让多账号隔离无声失效。确认无误可用 WithTrustExistingBrowser 跳过。
 func WithUserDataDir(dir string) Option { return config.WithUserDataDir(dir) }
 
@@ -151,3 +152,14 @@ func WithFlag(name, value string) Option { return config.WithFlag(name, value) }
 //
 //	chromium.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 func WithLogger(l *slog.Logger) Option { return config.WithLogger(l) }
+
+// 以下两个函数是 S2 下沉到 internal/chrome 后需要门面转发的公开 API。
+// 实现见 internal/chrome/path.go，这里只做转发，保持对外契约与文档不变。
+
+// SearchedChromePaths 返回最近一次自动查找时枚举过的全部路径。
+// 主要用于排查「找不到浏览器」：错误里会列出这些位置，便于确认真实安装路径。
+func SearchedChromePaths() []string { return chrome.SearchedChromePaths() }
+
+// RefreshChromePath 丢弃缓存的浏览器路径，下次查找时重新枚举。
+// 场景：进程启动后用户才安装浏览器，或安装位置发生了变化。
+func RefreshChromePath() { chrome.RefreshChromePath() }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/yymm456/go-drission/chromium/internal/chrome"
 	"github.com/yymm456/go-drission/chromium/internal/config"
 )
 
@@ -344,7 +345,7 @@ func TestWithChromePathExplicit(t *testing.T) {
 	if !o.ChromePathSet {
 		t.Fatal("显式指定后 chromePathSet 应为 true")
 	}
-	if _, err := resolveChromePath(o); err == nil {
+	if _, err := chrome.ResolveChromePath(o); err == nil {
 		t.Error("显式指定的路径不存在时应报错，不应静默回退到自动发现")
 	}
 }

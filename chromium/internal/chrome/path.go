@@ -1,4 +1,4 @@
-package chromium
+package chrome
 
 import (
 	"os"

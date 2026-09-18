@@ -1,15 +1,13 @@
-package chromium
+// Package chrome 负责 Chrome 进程与数据目录的全部底层操作：可执行文件查找、
+// 启动与端口探测、进程树回收、端口分配、数据目录排他锁与档案标记。
+//
+// 本包只向下依赖 internal/config 与 internal/errs，不感知 Browser / Tab 等上层概念。
+package chrome
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,66 +15,12 @@ import (
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
 
-// noProxyTransport 是绕过系统代理的 HTTP transport。
-//
-// 调试端口与 /json 端点都跑在本机回环地址上，必须直连：一旦走了 HTTP_PROXY
-// 环境变量指向的代理，探测请求会被转发到外部代理，导致「明明活着却探测失败」，
-// 进而每次都去重新启动一个 Chrome。
-var noProxyTransport = &http.Transport{
-	Proxy:                 nil,
-	DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-	ResponseHeaderTimeout: 3 * time.Second,
-}
-
-// isPortAlive 判断指定端口上是否有一个可用的 Chrome DevTools 端点。
-// 探测过程受 ctx 约束：ctx 取消或超时立即返回 false，不会拖慢调用方。
-func isPortAlive(ctx context.Context, port int) bool {
-	if err := ctx.Err(); err != nil {
-		return false
-	}
-
-	// 1. 快速 TCP 探测
-	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-	defer cancel()
-
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(probeCtx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return false
-	}
-	// 探测用的连接，关闭失败无补救手段，也没必要上报
-	_ = conn.Close()
-
-	// 2. 确认是 Chrome DevTools 端点，而非其他进程恰好占用端口
-	client := &http.Client{Timeout: 3 * time.Second, Transport: noProxyTransport}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("http://127.0.0.1:%d/json/version", port), nil)
-	if err != nil {
-		return false
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	var v struct {
-		Browser string `json:"Browser"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return false
-	}
-	return v.Browser != ""
-}
-
-// resolveChromePath 确定最终用于启动的浏览器可执行文件。
+// ResolveChromePath 确定最终用于启动的浏览器可执行文件。
 //
 // 规则：调用方用 WithChromePath 显式指定时，路径不存在就直接报错（不悄悄回退，
 // 否则拼写错误会被静默掩盖）；未指定时才走自动发现，找不到则连同搜索过的
 // 全部位置一起返回，方便调用方一眼看出该装到哪。
-func resolveChromePath(o *config.Options) (string, error) {
+func ResolveChromePath(o *config.Options) (string, error) {
 	if o.ChromePathSet {
 		if !fileExists(o.ChromePath) {
 			return "", fmt.Errorf("chromium: WithChromePath 指定的浏览器不存在: %s", o.ChromePath)
@@ -92,9 +36,9 @@ func resolveChromePath(o *config.Options) (string, error) {
 		errs.ErrChromeNotFound, len(tried), strings.Join(tried, "\n  "))
 }
 
-// launchChrome 启动 Chrome，应用全部配置项，返回 exec.Cmd 以便调用方跟踪进程。
+// LaunchChrome 启动 Chrome，应用全部配置项，返回 exec.Cmd 以便调用方跟踪进程。
 // ctx 控制「等待调试端口就绪」这一阶段：ctx 取消/到期即放弃等待并杀掉已启动的进程。
-func launchChrome(ctx context.Context, port int, o *config.Options) (*exec.Cmd, error) {
+func LaunchChrome(ctx context.Context, port int, o *config.Options) (*exec.Cmd, error) {
 	args := []string{
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		"--user-data-dir=" + o.UserDataDir,
@@ -146,7 +90,7 @@ func launchChrome(ctx context.Context, port int, o *config.Options) (*exec.Cmd, 
 		}
 	}
 
-	chromePath, err := resolveChromePath(o)
+	chromePath, err := ResolveChromePath(o)
 	if err != nil {
 		return nil, err
 	}
@@ -173,29 +117,22 @@ func launchChrome(ctx context.Context, port int, o *config.Options) (*exec.Cmd, 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	// 先立刻探一次，避免刚启动就被迫白等一个间隔
-	if isPortAlive(waitCtx, port) {
+	if IsPortAlive(waitCtx, port) {
 		return cmd, nil
 	}
 	for {
 		select {
 		case <-waitCtx.Done():
 			// 端口未就绪：杀掉已启动的整棵进程树，避免留下僵尸 Chrome 及其子进程占用 profile 目录
-			killProcessTree(cmd)
+			KillProcessTree(cmd)
 			if err := ctx.Err(); err != nil {
 				return nil, fmt.Errorf("等待端口 %d 就绪被取消: %w", port, err)
 			}
 			return nil, fmt.Errorf("chrome 已启动，但端口 %d 未在 %s 内就绪", port, timeout)
 		case <-ticker.C:
-			if isPortAlive(waitCtx, port) {
+			if IsPortAlive(waitCtx, port) {
 				return cmd, nil
 			}
 		}
 	}
-}
-
-// defaultUserDataDir 返回按端口隔离的默认用户数据目录。
-// 参考 DrissionPage 默认行为：放在系统临时目录下（Windows 即 %TEMP%），以端口命名子目录，
-// 形如 <temp>/go-drission/userData/<port>，同端口复用时登录态得以保留。
-func defaultUserDataDir(port int) string {
-	return filepath.Join(os.TempDir(), "go-drission", "userData", strconv.Itoa(port))
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/yymm456/go-drission/chromium/internal/cdpkit"
+	"github.com/yymm456/go-drission/chromium/internal/chrome"
 	"github.com/yymm456/go-drission/chromium/internal/config"
 	"github.com/yymm456/go-drission/chromium/internal/errs"
 )
@@ -53,8 +54,8 @@ type Browser struct {
 	// 会把所有页面一起滤掉；改成「等于锚点所在上下文」则新旧行为都正确。
 	defaultBrowserContextID cdp.BrowserContextID
 	launched                bool
-	chromeCmd               *exec.Cmd    // 启动的 Chrome 进程，Close 时用于杀进程
-	lock                    *profileLock // 数据目录排他锁，仅自己启动 Chrome 时持有
+	chromeCmd               *exec.Cmd           // 启动的 Chrome 进程，Close 时用于杀进程
+	lock                    *chrome.ProfileLock // 数据目录排他锁，仅自己启动 Chrome 时持有
 	closed                  bool
 
 	mu   sync.Mutex
@@ -126,7 +127,7 @@ func NewBrowser(port int, opts ...Option) *Browser {
 	}
 
 	if port == 0 {
-		if free, err := findFreePort(); err == nil {
+		if free, err := chrome.FindFreePort(); err == nil {
 			port = free
 		} else {
 			port = 9222 // 分配失败时退回默认端口
@@ -137,7 +138,7 @@ func NewBrowser(port int, opts ...Option) *Browser {
 	// 必须转为绝对路径：相对路径会让 Chrome handoff 到已存在的浏览器会话，
 	// 从而不新开实例，请求的调试端口也就永远无法就绪。
 	if o.UserDataDir == "" {
-		o.UserDataDir = defaultUserDataDir(port)
+		o.UserDataDir = chrome.DefaultUserDataDir(port)
 	} else if abs, err := filepath.Abs(o.UserDataDir); err == nil {
 		o.UserDataDir = abs
 	}
@@ -314,26 +315,26 @@ func (b *Browser) Connect(ctx context.Context) error {
 		defer cancel()
 	}
 
-	if isPortAlive(handshakeCtx, b.port) {
+	if chrome.IsPortAlive(handshakeCtx, b.port) {
 		b.opts.Logger.Info("检测到已有 Chrome，直接连接", "port", b.port)
 		b.launched = false
 		// 关键一步：核实端口上那个 Chrome 确实是我们期望的档案。
 		// 少了这步，显式指定的 WithUserDataDir 会被静默忽略——你以为在用档案 A，
 		// 实际接管了别人的浏览器（别的登录态），多账号隔离无声失效。
-		if err := b.verifyPortOwner(); err != nil {
+		if err := chrome.VerifyPortOwner(b.opts, b.port); err != nil {
 			return err
 		}
 	} else {
 		b.opts.Logger.Info("未检测到 Chrome，正在启动", "port", b.port)
 		// 先拿数据目录的 OS 级排他锁：两个实例并发用同一目录启动 Chrome 时，
 		// 后启动者会弹「无法对其数据目录执行读写操作」对话框，这里提前转为明确的 Go 错误。
-		lock, err := acquireProfileLock(b.opts.UserDataDir)
+		lock, err := chrome.AcquireProfileLock(b.opts.UserDataDir)
 		if err != nil {
 			return err
 		}
-		cmd, err := launchChrome(handshakeCtx, b.port, b.opts)
+		cmd, err := chrome.LaunchChrome(handshakeCtx, b.port, b.opts)
 		if err != nil {
-			lock.release()
+			lock.Release()
 			return err
 		}
 		b.lock = lock
@@ -341,7 +342,7 @@ func (b *Browser) Connect(ctx context.Context) error {
 		b.chromeCmd = cmd
 		// 留下档案标记，供下次接管时核实「端口上的浏览器属于哪个目录」。
 		// 写入失败不阻断启动，只记日志（最坏结果是下次接管走「无法证实」分支）。
-		if err := writeProfileMarker(b.opts.UserDataDir, b.port, b.PID()); err != nil {
+		if err := chrome.WriteProfileMarker(b.opts.UserDataDir, b.port, b.PID()); err != nil {
 			b.opts.Logger.Warn("写入档案标记失败，下次接管将无法核实用户数据目录",
 				"dir", b.opts.UserDataDir, "err", err)
 		}
@@ -636,13 +637,13 @@ func (b *Browser) releaseConnectionResources() {
 	// 如果是自己启动的 Chrome，杀掉整棵进程树（含 renderer/gpu/crashpad 等子进程），
 	// 否则残留子进程会继续占用 user-data-dir 文件锁，导致下次启动报「无法读写数据目录」。
 	if b.launched {
-		killProcessTree(b.chromeCmd)
+		chrome.KillProcessTree(b.chromeCmd)
 		b.launched = false
 	}
 	b.chromeCmd = nil
 	// 进程树杀完后再释放数据目录排他锁，让等待方能立刻接管
 	if b.lock != nil {
-		b.lock.release()
+		b.lock.Release()
 		b.lock = nil
 	}
 }
