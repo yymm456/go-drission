@@ -8,6 +8,22 @@
 
 ---
 
+## [未发布]
+
+### 新增
+
+- **`Tab.Back(ctx)` / `Tab.Forward(ctx)`**：后退 / 前进一条历史记录。
+  到达历史边界时返回 `ErrNoHistoryEntry`（可用 `errors.Is` 判断），**页面保持不动** ——
+  不做静默 no-op，否则调用方分不清「真的退了」和「没得可退」。
+- `ErrNoHistoryEntry` 哨兵错误。
+
+### 已知边界
+
+- Back / Forward 判定「导航完成」用的是**地址变化**，不是 load 事件：
+  历史导航（从缓存恢复）不会再触发一次 load，等它会一路卡到 ctx 超时。
+  因此 `Navigate` 等 load、`Back`/`Forward` 等地址、`Reload` 只发命令不等 ——
+  这三者当前并不一致，`Reload` 的语义以后单独讨论。
+
 ## [0.3.0] - 2026-09-19
 
 ### 新增

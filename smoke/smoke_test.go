@@ -207,6 +207,21 @@ func startServers(t *testing.T) *testServers {
 			}
 			fmt.Fprintf(w, "hello %s", c.Value)
 
+		// --- 历史导航（Back / Forward）用的页面 ---
+		// 三个内容互不相同的页面，方便断言「真的退到了哪一页」而不是只看 URL。
+		case "/page-a", "/page-b", "/page-c":
+			name := strings.ToUpper(r.URL.Path[len("/page-"):])
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>页面%s</title></head>`+
+				`<body><h1 id="title">页面%s</h1></body></html>`, name, name)
+
+		// SPA 页：本身不跳转，靠 pushState 造历史条目。用于验证 Back/Forward
+		// 走的是 Chromium 的 history，而不是「比对 URL」这种简单实现。
+		case "/spa":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprint(w, `<!doctype html><html><head><meta charset="utf-8"><title>SPA</title></head>`+
+				`<body><h1 id="title">SPA-初始</h1></body></html>`)
+
 		case "/redirect":
 			http.Redirect(w, r, "/api/get", http.StatusFound)
 

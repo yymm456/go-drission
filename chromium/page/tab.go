@@ -406,3 +406,63 @@ func (t *Tab) Reload(ctx context.Context) error {
 		return cdppage.Reload().Do(c)
 	}))
 }
+
+// Back 后退到上一条历史记录，等待导航完成。
+//
+// 超时与取消语义与 Navigate 完全一致：走 t.run → safeCtx 校正，
+// 调用方 ctx 的 deadline 优先，未设时才套用 Tab 内置超时。不另起一套 timeout 机制。
+//
+// 已经在第一条历史记录时返回 ErrNoHistoryEntry（可用 errors.Is 判断），
+// 页面保持原样 —— 不做静默 no-op，否则调用方分不清「退了」和「没得退」。
+func (t *Tab) Back(ctx context.Context) error {
+	return t.navigateHistory(ctx, -1)
+}
+
+// Forward 前进到下一条历史记录，等待导航完成。语义与 Back 完全对称。
+func (t *Tab) Forward(ctx context.Context) error {
+	return t.navigateHistory(ctx, 1)
+}
+
+// navigateHistory 按 offset 移动历史指针并等待导航完成；offset 为 -1 后退、+1 前进。
+//
+// 先自己取一次历史，有两个原因：
+//  1. 越界时要给**本库**的哨兵错误 —— 上游 chromedp.NavigateBack 给的是
+//     errors.New("invalid navigation entry")，无法用 errors.Is 判断；
+//  2. NavigateToHistoryEntry 需要目标条目的 ID，只能从历史里取。
+//
+// 跳转这一步复用上游的 chromedp.NavigateToHistoryEntry：它是 NavigateAction，
+// 自带 load 等待，正好与 Navigate 的语义对齐（不必自己实现等待）。
+func (t *Tab) navigateHistory(ctx context.Context, offset int64) error {
+	return t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		cur, entries, err := cdppage.GetNavigationHistory().Do(c)
+		if err != nil {
+			return err
+		}
+		target := cur + offset
+		if len(entries) == 0 || target < 0 || target >= int64(len(entries)) {
+			return fmt.Errorf("%w（当前第 %d 条，共 %d 条）", errs.ErrNoHistoryEntry, cur, len(entries))
+		}
+
+		// 用裸 CDP 命令，而不是上游的 chromedp.NavigateToHistoryEntry。
+		// 后者是 NavigateAction，会等一次 load 事件；但**历史导航通常不会再触发 load**
+		// （页面从缓存恢复），实测结果是导航早已成功、却一路等到 ctx 超时：
+		//     裸命令      771µs   URL 与标题都正确
+		//     等 load 封装 8.0s    deadline exceeded（页面其实已经切好了）
+		// 所以这里自己发命令，再自己判定「导航完成」。
+		if err := cdppage.NavigateToHistoryEntry(entries[target].ID).Do(c); err != nil {
+			return err
+		}
+
+		// 「导航完成」的判据取「地址变成目标条目」，而不是等 load 或等 body：
+		// 历史导航不会再触发一次 load，等它会一路卡到 ctx 超时（实测导航其实早就成功了）。
+		// 复用 pollWait 骨架，与 WaitURL 共用同一套错误分诊规则。
+		want := entries[target].URL
+		return pollWait(c, fmt.Sprintf("等待地址变为 %q", want), false, func() (bool, error) {
+			var u string
+			if err := chromedp.Location(&u).Do(c); err != nil {
+				return false, err
+			}
+			return u == want || strings.Contains(u, want), nil
+		})
+	}))
+}

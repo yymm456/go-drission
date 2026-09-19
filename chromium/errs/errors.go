@@ -76,7 +76,16 @@ var (
 
 	// ErrEmptyURL 表示传入的地址为空或缺少协议头 / 主机名。
 	// LoginWithCookies 这类「先注入再打开」的接口需要可用的绝对地址。
+	// ErrEmptyURL 表示传入的地址为空或缺少协议头 / 主机名。
 	ErrEmptyURL = errors.New("chromium: 地址为空或格式非法")
+
+	// ErrNoHistoryEntry 表示已经到达历史记录的边界：没有更早或更晚的一条可去。
+	//
+	// 到达边界时**页面保持原样** —— 既不跳转，也不把这件事吞掉。
+	// 之所以报错而不是静默 no-op：静默的话调用方无法区分「真的退了」
+	// 和「没得可退」，而这两种情形在业务上往往要走不同分支。
+	// 判断请用 errors.Is(err, errs.ErrNoHistoryEntry)。
+	ErrNoHistoryEntry = errors.New("chromium: 没有可前进或后退的历史记录")
 )
 
 // ErrFrameScript 表示「iframe 内的脚本自身抛出异常」。

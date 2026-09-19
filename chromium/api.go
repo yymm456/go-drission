@@ -107,6 +107,10 @@ var (
 
 	// ErrEmptyURL 表示传入的地址为空或缺少协议头 / 主机名。
 	ErrEmptyURL = errs.ErrEmptyURL
+
+	// ErrNoHistoryEntry 表示已经到达历史记录边界（没有更早或更晚的一条可去）。
+	// Back / Forward 在越界时返回它，页面保持原样。用 errors.Is 判断。
+	ErrNoHistoryEntry = errs.ErrNoHistoryEntry
 )
 
 // WithChromePath 指定浏览器可执行文件路径（支持 Chrome / Edge / Brave / Chromium）。

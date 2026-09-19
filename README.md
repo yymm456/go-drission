@@ -310,7 +310,9 @@ func main() {
 | 方法 | 说明 |
 |---|---|
 | `Navigate(ctx, url) error` | 导航并等待 load，超时/失败如实返回 error |
-| `Reload(ctx) error` | 重新加载 |
+| `Reload(ctx) error` | 重新加载（只发命令，不等 load；需要等请自行 `WaitReady`） |
+| `Back(ctx) error` | 后退到上一条历史记录；已到第一条时返回 `ErrNoHistoryEntry`，页面不动 |
+| `Forward(ctx) error` | 前进到下一条历史记录；已到最后一条时返回 `ErrNoHistoryEntry`，页面不动 |
 | `Title(ctx) (string, error)` | 页面标题 |
 | `CurrentURL(ctx) (string, error)` | 当前地址（走一次 CDP，实时值） |
 | `URL() string` | 最近一次同步到的地址快照，并发安全；可能滞后，实时值请用 `CurrentURL` |
@@ -954,6 +956,14 @@ Session 的请求方法与 Cookie 跨实例复用、反检测生效、网络监�
   不会被 `ResponseHeaders` 的 map 覆盖成一条。
 - `Eval` 返回值按 JSON 解码：`string` / `float64` / `map[string]any` /
   `[]any` / `bool` / `nil`。
+- **`Back` / `Forward` 判定「导航完成」用的是地址变化，不是 load 事件。**
+  历史导航（尤其从缓存恢复）不会再触发一次 load，若照 `Navigate` 那样等 load
+  会一路卡到 ctx 超时——实测正常的历史导航都会被拖满整个超时。
+  因此退到一个响应体迟迟不返回的页面时，`Back` 会在地址确认后立即返回，
+  页面是否真的加载完由调用方按需 `WaitReady`。这与 `Reload` 的语义同类。
+  另外，标签页的历史里通常还带有 `chrome://new-tab-page/` 这类初始条目，
+  所以「第一次 Back 就应当越界」这种假设不成立——请一路退到返回
+  `ErrNoHistoryEntry` 为止。
 - `Listener.Records()` 返回的是**深拷贝**：监听进行中也能安全读取，但请不要依赖
   「改返回值能影响内部状态」这种行为。记录默认只保留最近 **1000** 条
   （`MaxRecords(n)` 可调、传 0 关闭上限），更早的会被 FIFO 淘汰——
