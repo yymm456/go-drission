@@ -25,7 +25,7 @@ import (
 // 免得与机器上已有的调试端口撞车。
 func newProfileManagerForTest(t *testing.T) *chromium.ProfileManager {
 	t.Helper()
-	pm := chromium.NewProfileManager(tempProfileDir(t), 0,
+	pm := chromium.NewProfileManager(tempProfileDir(t), nextProfileBasePort(),
 		chromium.WithHeadless(true),
 		chromium.WithDefaultTimeout(15*time.Second),
 		chromium.WithFlag("no-proxy-server", ""),

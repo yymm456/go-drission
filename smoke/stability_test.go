@@ -25,11 +25,60 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yymm456/go-drission/chromium"
 )
+
+// ---------------------------------------------------------------- 端口分配
+//
+// 稳定性测试要反复起停 Chrome 上百次，端口段必须避开日常使用的低位端口。
+//
+// 为什么不能传 0 让库自动分配：库在 port==0 时会先试 FindFreePort，
+// 但**分配失败就退回 9222**（见 browser.go）。9222 恰恰是最常见的
+// 「用户自己开着 Chrome 调试」的端口；接管上去之后，测的就不再是新起的
+// 干净实例 —— 要么连到别人的浏览器，要么直接失败，两种都让结论不可信。
+const (
+	portBase  = 40000
+	portCeil  = 50000
+	portBlock = 20 // 给 ProfileManager 预留的连续端口块大小
+)
+
+var portNext atomic.Int32
+
+func init() { portNext.Store(portBase) }
+
+// nextFreePort 取下一个当前未被监听的高位端口。
+//
+// 检查「是否已被监听」而不是无脑递增：机器上有可能真有服务占了 4xxxx，
+// 撞上去会让整轮启停失败，而失败原因离端口很远，很难查。
+func nextFreePort() int {
+	for range portCeil - portBase {
+		p := int(portNext.Add(1))
+		if p >= portCeil {
+			portNext.Store(portBase)
+			p = int(portNext.Add(1))
+		}
+		if !portStillListening(p) {
+			return p
+		}
+	}
+	// 整段都被占用：不该发生，明确报出来比默默用错端口好
+	panic("40000-50000 段内找不到空闲端口")
+}
+
+// nextProfileBasePort 给 ProfileManager 用：它内部会从 basePort 起按打开顺序递增，
+// 所以要一次预留一整块连续端口，不能跟单实例测试抢同一个计数器。
+func nextProfileBasePort() int {
+	p := int(portNext.Add(portBlock))
+	if p >= portCeil {
+		portNext.Store(portBase)
+		p = int(portNext.Add(portBlock))
+	}
+	return p
+}
 
 // stabilityRounds 读取重复次数，默认 5。
 //
@@ -87,7 +136,7 @@ func newIsolatedBrowser(t *testing.T) (*chromium.Browser, *chromium.Tab) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, tab, err := chromium.OpenPage(ctx, 0,
+	b, tab, err := chromium.OpenPage(ctx, nextFreePort(),
 		chromium.WithUserDataDir(dir),
 		chromium.WithHeadless(true),
 		chromium.WithDefaultTimeout(15*time.Second),
@@ -275,7 +324,7 @@ func TestStabilityTabChurn(t *testing.T) {
 // Profile 用 OS 级排他文件锁。若库侧漏了 Release，第二轮 Open 会直接失败，
 // 而且失败位置离真正的错误很远，非常难查 —— 所以必须钉住。
 func TestStabilityProfileLockReleased(t *testing.T) {
-	pm := chromium.NewProfileManager(tempProfileDir(t), 0,
+	pm := chromium.NewProfileManager(tempProfileDir(t), nextProfileBasePort(),
 		chromium.WithHeadless(true),
 		chromium.WithDefaultTimeout(15*time.Second),
 		chromium.WithFlag("no-proxy-server", ""),
@@ -298,7 +347,7 @@ func TestStabilityProfileLockReleased(t *testing.T) {
 // TestStabilityDoubleCloseProfile 重复关闭同名档案、以及关闭从未打开过的档案，
 // 都不应 panic。
 func TestStabilityDoubleCloseProfile(t *testing.T) {
-	pm := chromium.NewProfileManager(tempProfileDir(t), 0,
+	pm := chromium.NewProfileManager(tempProfileDir(t), nextProfileBasePort(),
 		chromium.WithHeadless(true),
 		chromium.WithDefaultTimeout(15*time.Second),
 	)

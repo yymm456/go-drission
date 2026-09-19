@@ -77,7 +77,7 @@ func setup(t *testing.T) (*chromium.Browser, *chromium.Tab) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		sharedBrowser, sharedTab, errShared = chromium.OpenPage(ctx, 0,
+		sharedBrowser, sharedTab, errShared = chromium.OpenPage(ctx, nextFreePort(),
 			chromium.WithUserDataDir(sharedUserDataDir),
 			chromium.WithHeadless(true),
 			chromium.WithDefaultTimeout(15*time.Second),
@@ -778,7 +778,7 @@ func TestAntiDetect(t *testing.T) {
 	bootCtx, cancelBoot := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelBoot()
 
-	b, tab, err := chromium.OpenPage(bootCtx, 0,
+	b, tab, err := chromium.OpenPage(bootCtx, nextFreePort(),
 		chromium.WithUserDataDir(dir),
 		chromium.WithHeadless(true),
 		chromium.WithDefaultTimeout(15*time.Second),

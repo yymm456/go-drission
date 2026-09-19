@@ -33,7 +33,7 @@ func relayBrowser(t *testing.T) *chromium.Browser {
 	// sharedUserDataDir 注释）。这里先调 t.TempDir() 再注册 t.Cleanup(b.Close)：
 	// t.Cleanup 是后进先出，于是先关浏览器、后删目录，不会「占着目录删不掉」。
 	dir := t.TempDir()
-	b, _, err := chromium.OpenPage(ctx, 0,
+	b, _, err := chromium.OpenPage(ctx, nextFreePort(),
 		chromium.WithUserDataDir(dir),
 		chromium.WithHeadless(true),
 		chromium.WithDefaultTimeout(15*time.Second),

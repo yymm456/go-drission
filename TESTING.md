@@ -166,3 +166,11 @@ ok  smoke                  110.599s   （-race -tags smoke）
 
 6. `ProfileManager.CloseAll()` 是**终态**操作：之后 `Open` 返回 `ErrProfileClosed`，
    语义同 `sql.DB.Close`。想继续用请新建 manager。重复调用是安全的。
+
+7. **smoke 一律用 40000+ 的高位调试端口段**（`smoke/stability_test.go` 里的
+   `nextFreePort()` / `nextProfileBasePort()`），不要用 0 也不要用 9222。
+   原因：`OpenPage(ctx, 0, ...)` 会先试 `FindFreePort`，**失败就退回 9222**；
+   而 9222 正是最常见的「用户自己开着 Chrome 调试」的端口。
+   稳定性测试要反复起停上百次，一旦接管上去，测的就不再是新起的干净实例 ——
+   要么连到别人的浏览器，要么直接失败，两种都让结论不可信。
+   `ProfileManager` 的 `basePort=0` 会退回 9300 并从那里递增，同理要避开。
