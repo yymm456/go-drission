@@ -565,7 +565,21 @@ func (b *Browser) releaseConnectionResources() {
 	}
 }
 
-// Close 断开连接并释放资源，默认不关标签页。属 teardown，遵循 io.Closer 惯例不接受 ctx。
+// Close 断开连接并释放资源。属 teardown，遵循 io.Closer 惯例不接受 ctx。
+//
+// ⚠ 「释放资源」包含**关掉本实例托管的全部标签页**，不只是断开连接：实现里逐个取消
+// 标签页上下文，而 chromedp 在 ctx.Done 里会 DetachFromTarget + CloseTarget
+// （见上游 chromedp/chromedp.go 的 NewContext），因此**只要是 attach 过的 target 都会被关** ——
+// NewTab 出来的页面和从外部附着来的页面一样中招，与「谁创建的」无关。唯一不受影响的是
+// chromedp 视作「原始标签」的那个上下文（本库建连时的锚点 rootCtx，其取消直接 return；
+// 锚点本身由 closeAnchorOnce 处理，且只在已有真实标签时才关）。
+//
+// 两个后果（2026-09-19 在真实 Chrome 上复现）：
+//   - 「只断连接、保留页面」不能靠 Close 实现 —— 接管场景下随手 Close 会关掉调用方眼前的页面；
+//   - 若被关掉的包含浏览器里最后一个标签，非 headless 的 Chrome 会随之退出
+//     （实测：Close 之后调试端口从 LISTENING 消失）。
+//
+// 因此需要「清连接缓存」时应先确认浏览器已不可达，再调 Close。
 //
 // 释放顺序固定：隔离上下文靠 CDP disposeBrowserContext 销毁，须在 rootCtx 存活时执行，
 // 故排在 rootCancel 之前。

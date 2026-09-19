@@ -33,6 +33,15 @@
 
 ### 已知边界
 
+- **`Browser.Close()` 会关掉本实例托管的全部标签页**，不只是断开连接 —— 这是本轮把它
+  写清楚的一条（**只改文档与注释，行为未变**）：实现里逐个取消标签页上下文，而 chromedp
+  在 `ctx.Done` 里做 `DetachFromTarget` + `CloseTarget`，因此**只要是 attach 过的 target
+  都会被关**，`NewTab` 出来的和从外部附着来的一样中招（唯一例外是 chromedp 视作「原始标签」
+  的建连锚点）。
+  实测（真实 Chrome）：若被关掉的包含浏览器里最后一个标签，非 headless 的 Chrome 会直接
+  退出，调试端口随之消失。
+  → 「只断连接、保留页面」不能靠 `Close`；要清连接缓存请先确认浏览器已不可达。
+
 - Back / Forward 判定「导航完成」用的是**地址变化**，不是 load 事件：
   历史导航（从缓存恢复）不会再触发一次 load，等它会一路卡到 ctx 超时。
   因此 `Navigate` 等 load、`Back`/`Forward` 等地址、`Reload` 只发命令不等 ——
