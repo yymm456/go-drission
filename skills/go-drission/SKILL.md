@@ -1,7 +1,7 @@
 ---
 name: go-drission
 description: 在 go-drission 仓库（Go 浏览器自动化库）里干活时使用——包括调用它的 API 写脚本，以及为它本身加功能/修 bug/补测试。涵盖 Browser / Tab / Element / Frame / Selector / Wait / Listener / BrowserContext / Profile / Session / Cookie 接力的真实 API、必须遵守的 context 与生命周期约束、哨兵错误的判定方式、测试分层与 API 冻结规则。任务涉及浏览器自动化、页面抓取、免登录、Cookie 接力、网络监听、多账户隔离，或需要理解/修改本仓库代码时加载本 skill。
-version: 1.0.0
+version: 1.1.0
 agent_created: true
 ---
 
@@ -103,6 +103,9 @@ n, _ := tab.EleCSS(".item").Count(ctx)  // 未命中返回 0，不是错误
 
 // 执行 JS
 v, _ := tab.Eval(ctx, `document.querySelectorAll('a').length`)
+// ⚠ Tab.Eval **不等 Promise**（只有 Frame.Eval 等，见 §12）：
+//   页内 fetch(...) 这类表达式求值只会拿到一个不可序列化的 Promise 对象。
+//   要么写成同步表达式 / IIFE，要么自己「先启动、再轮询页面上的结果槽」。
 
 // 等待
 if err := tab.Wait().URL("/dashboard").Timeout(10 * time.Second).Do(ctx); err != nil { return err }
@@ -328,6 +331,7 @@ GO_DRISSION_STABILITY_ROUNDS=100 go test -tags smoke -run TestStability -timeout
 - **不要为了「更优雅」做大范围重构**。当前架构（含 `page` 是一个大包）是有意为之：文件大不等于要拆包，同包内拆文件可以，拆包不行。
 - **不要静默吞错误**，也不要为了测试通过去改产品语义 —— 先判断是「实现错」还是「测试预期错」。
 - 测试里**不要用 0 或 9222 当调试端口**：`OpenPage(ctx, 0, ...)` 在自动分配失败时会退回 **9222**（用户最可能自己开着 Chrome 调试的端口），接管上去就不再是干净实例了。smoke 统一走 `nextFreePort()`（40000+ 段）。
+- **接管场景下不要随手 `Close()`**：它会关掉本实例 attach 过的全部标签页（含外部附着来的），最后一个标签还会带走整个浏览器（见 §12）。
 
 ---
 
@@ -348,6 +352,24 @@ GO_DRISSION_STABILITY_ROUNDS=100 go test -tags smoke -run TestStability -timeout
 
 - **`Reload` 不等 load**，与 `Navigate` / `Back` / `Forward` 不一致（见 §6 的表格）。这是有意保留的现状，改动前先确认。
 - `Navigate` / `Back` / `Forward` 判定「完成」的依据各不相同（等 load vs 等地址），见 §6。
+- **`Tab.Eval` 不等 Promise，`Frame.Eval` 等**（源：`page/tab.go` 直接 `chromedp.Evaluate`，
+  而 `page/frame.go` 带了 `WithAwaitPromise(true)`）。实测（2026-09-19，真实 Chrome）：
+  用 `Tab.Eval` 求值 `fetch(...).then(r=>r.text())` 拿到的是 `{}` 而非响应文本，
+  也不会报错 —— **静默失效**。页内发请求的正确姿势是「先启动、再轮询结果槽」：
+  第一次求值把 `Promise.resolve(expr).then(v=>window.槽=v)` 挂上去并返回，
+  随后轮询 `String(window.槽)` 直到不再是 `null`。别用同步 `XMLHttpRequest` 顶替，它会把渲染线程卡住。
+- **`Browser.Close()` 会关掉「它 attach 过的**全部**标签页」**（实现：`Close` 逐个 `page.ReleaseTab`
+  → `Tab.cancel()`；而 chromedp 在 `ctx.Done` 里做 `DetachFromTarget` + `CloseTarget`，
+  见上游 `chromedp/chromedp.go` 的 `NewContext`）。判据是**有没有 attach 过，与「谁创建的」无关**：
+  `NewTab` 出来的页面和从外部附着来的页面一样中招；唯一例外是 chromedp 视作「原始标签」的上下文
+  （本库的建连锚点，它的 cancel 直接 return）。
+  实测（2026-09-19，真实 Chrome）：故意让库附着到 Chrome 自己开的 `chrome://newtab`（绝不可能是
+  库创建的），再直接调 `Close()` → 那个标签页被关，且因为它是浏览器里最后一个标签，**Chrome 整体退出**
+  （调试端口从 LISTENING 消失）。由此两条：① 接管场景下随手 `Close()` 会关掉调用方眼前的页面；
+  ②「清连接缓存」不能简单等于 `Close()` —— 先确认端口确实已不可达，再关。
+  顺带：连上外部启动的 Chrome 必须带 `WithTrustExistingBrowser()`，否则被 `ErrBrowserMismatch` 拦下，
+  且 attach 时 `Connect` 会自己造一个 about:blank 锚点页，它出现在真实窗口里但**不在** `Tabs()` 里
+  （首个真实标签就绪后由 `closeAnchorOnce` 关掉）。
 
 已对齐、不必再担心的：
 
