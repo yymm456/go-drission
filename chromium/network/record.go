@@ -2,6 +2,7 @@ package network
 
 import (
 	"maps"
+	"slices"
 )
 
 // Record 一条完整的请求/响应记录
@@ -16,6 +17,15 @@ type Record struct {
 	Status          int64
 	ResponseHeaders map[string]string
 	ResponseBody    string
+
+	// SetCookies 是响应下发的全部 Set-Cookie，按出现顺序排列。
+	//
+	// 为什么单独开一个字段而不是只塞进 ResponseHeaders：后者是 map[string]string，
+	// 一次响应下发多个 Set-Cookie 时同名键会互相覆盖，只剩最后一条。
+	// CDP 侧把重复头用 \n 连接成单键（见 mergeExtraHeaders），这里已拆开。
+	//
+	// 没有 Set-Cookie 的响应该字段为 nil。
+	SetCookies []string
 }
 
 // clone 深拷贝一条记录。
@@ -43,6 +53,9 @@ func (r *Record) clone() *Record {
 	if r.ResponseHeaders != nil {
 		c.ResponseHeaders = make(map[string]string, len(r.ResponseHeaders))
 		maps.Copy(c.ResponseHeaders, r.ResponseHeaders)
+	}
+	if r.SetCookies != nil {
+		c.SetCookies = slices.Clone(r.SetCookies)
 	}
 	return c
 }

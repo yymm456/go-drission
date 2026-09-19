@@ -65,6 +65,11 @@ func LaunchChrome(ctx context.Context, port int, o *config.Options) (*exec.Cmd, 
 			"--mute-audio",
 		)
 	}
+	// --test-type 是 --ignore-certificate-errors 的配套项：只给前者时，
+	// 部分 Chrome 版本仍会在导航阶段拦下证书错误（表现为 net::ERR_CERT_* 照旧抛出）。
+	if o.InsecureTLS {
+		args = append(args, "--ignore-certificate-errors", "--test-type")
+	}
 	if o.Lang != "" {
 		args = append(args, "--lang="+o.Lang)
 	}

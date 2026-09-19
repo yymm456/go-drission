@@ -24,6 +24,7 @@ cookies.json
 profiles/
 screenshots/
 
+
 # Go 工作区
 go.work
 go.work.sum
@@ -36,3 +37,5 @@ go.work.sum
 .workbuddy
 # 记忆文件
 CODE_REVIEW.md
+# 本地用户测试目录
+test

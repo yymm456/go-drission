@@ -144,6 +144,15 @@ func WithLang(lang string) Option { return config.WithLang(lang) }
 // 因此默认不启用 —— 需要时显式传 true。
 func WithAntiDetect(enable bool) Option { return config.WithAntiDetect(enable) }
 
+// WithInsecureTLS 跳过 TLS 证书校验，用于自签证书的内网站点（默认关闭）。
+//
+// 与 session.WithInsecureTLS 同名同义：那一侧改的是 http.Transport 的 TLSClientConfig，
+// 这一侧是给 Chrome 追加 --ignore-certificate-errors 与 --test-type。
+//
+// 开启后浏览器不再拦任何证书错误 —— 公网使用等于放弃中间人防护，
+// 只在明确信任的网络里开。
+func WithInsecureTLS() Option { return config.WithInsecureTLS() }
+
 // WithDefaultTimeout 设置 Tab 操作的默认超时（默认 30s）。
 //
 // 调用 Tab 方法时若传入的 ctx 没有 deadline，库自动套用该超时，避免 Chrome 卡死导致永久阻塞。

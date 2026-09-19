@@ -33,6 +33,18 @@ func TestWithDefaultTimeoutOption(t *testing.T) {
 	}
 }
 
+// TestInsecureTLSOption 覆盖跳过证书校验的开关。
+func TestInsecureTLSOption(t *testing.T) {
+	o := config.Defaults()
+	if o.InsecureTLS {
+		t.Error("跳过证书校验应默认关闭")
+	}
+	WithInsecureTLS()(o)
+	if !o.InsecureTLS {
+		t.Error("WithInsecureTLS() 未生效")
+	}
+}
+
 // TestWithChromePathExplicit 区分「未指定」与「显式指定」：
 // 显式指定一个不存在的路径时，必须报错而不是悄悄回退到自动发现。
 func TestWithChromePathExplicit(t *testing.T) {

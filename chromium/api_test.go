@@ -194,6 +194,10 @@ func TestRecordFieldsAreFrozen(t *testing.T) {
 		"Status":          "int64",
 		"ResponseHeaders": "map",
 		"ResponseBody":    "string",
+		// SetCookies：补 responseReceivedExtraInfo 后新增（响应头不再缺 Set-Cookie）。
+		// 它必须是 slice 而不是 string —— 一次响应可以下发多个 Set-Cookie，
+		// 而 ResponseHeaders 是 map，同名键装不下多个值。
+		"SetCookies": "slice",
 	}
 
 	typ := reflect.TypeFor[Record]()

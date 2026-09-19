@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	cdpnetwork "github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
@@ -95,6 +96,76 @@ func (l *Listener) handleResponse(e *cdpnetwork.EventResponseReceived) {
 		if rec.URL == "" {
 			rec.URL = e.Response.URL
 		}
+	}
+
+	// ExtraInfo 可能已经先到（CDP 不保证顺序），这时把它攒下的完整头并进来。
+	// 合并完就删：后续不再需要，留着只会让这份暂存表无限增长。
+	if extra, ok := l.extraHeaders[string(e.RequestID)]; ok {
+		mergeExtraHeaders(rec, extra)
+		delete(l.extraHeaders, string(e.RequestID))
+	}
+}
+
+// handleResponseExtraInfo 处理 responseReceivedExtraInfo：带上 responseReceived 里没有的
+// 完整响应头（最关键的是 Set-Cookie）。
+//
+// 两条来自 CDP 文档、直接决定这里写法的事实：
+//   - 它可能在 responseReceived **之前或之后**到达，所以两侧都要尝试合并；
+//   - 并非每个响应都有它，所以它不来是完全正常的，不能当作错误。
+func (l *Listener) handleResponseExtraInfo(e *cdpnetwork.EventResponseReceivedExtraInfo) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	id := string(e.RequestID)
+	rec, ok := l.records[id]
+	if !ok {
+		// 响应事件还没到，先攒着，等 handleResponse 来取。
+		// 若最终也没等到（该请求没有 responseReceived），条目会在 Clear/Stop 时清掉。
+		if l.extraHeaders == nil {
+			l.extraHeaders = make(map[string]cdpnetwork.Headers)
+		}
+		l.extraHeaders[id] = e.Headers
+		return
+	}
+	mergeExtraHeaders(rec, e.Headers)
+}
+
+// mergeExtraHeaders 把 ExtraInfo 的完整响应头并入记录。需在 mu 保护下调用。
+//
+// 合并策略：ExtraInfo 是「线上收到的原始头」，以它为准覆盖初步头。
+// Set-Cookie 另外拆进 SetCookies —— CDP 约定重复头用 \n 连接成单键，
+// 直接拆开即可还原出多条。
+func mergeExtraHeaders(rec *Record, h cdpnetwork.Headers) {
+	if len(h) == 0 {
+		return
+	}
+	if rec.ResponseHeaders == nil {
+		rec.ResponseHeaders = make(map[string]string, len(h))
+	}
+	for k, v := range h {
+		rec.ResponseHeaders[k] = fmt.Sprint(v)
+	}
+
+	// 键名大小写不敏感：HTTP 头名不区分大小写，CDP 不保证给的是 Set-Cookie 还是 set-cookie。
+	for k, v := range h {
+		if !strings.EqualFold(k, "set-cookie") {
+			continue
+		}
+		raw := strings.TrimSpace(fmt.Sprint(v))
+		if raw == "" {
+			break
+		}
+		parts := strings.Split(raw, "\n")
+		setCookies := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				setCookies = append(setCookies, s)
+			}
+		}
+		if len(setCookies) > 0 {
+			rec.SetCookies = setCookies
+		}
+		break
 	}
 }
 

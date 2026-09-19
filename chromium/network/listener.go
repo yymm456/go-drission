@@ -34,6 +34,13 @@ type Listener struct {
 	mu      sync.Mutex
 	records map[string]*Record
 	order   []string
+
+	// extraHeaders 暂存 responseReceivedExtraInfo 带来的完整响应头，按 requestID 索引。
+	//
+	// 存在的原因：该事件与 responseReceived 的到达顺序不保证（CDP 文档明确说明），
+	// 谁后到谁负责合并。合并完即删除；剩下的孤儿在 Clear / Stop 时整体清掉。
+	extraHeaders map[string]cdpnetwork.Headers
+
 	// maxRecords 是记录保留上限（FIFO 淘汰）；<= 0 表示不限制。
 	maxRecords int
 	ctx        context.Context // 监听生命周期上下文，由 Start(ctx) 派生
@@ -95,6 +102,8 @@ func (l *Listener) Clear() {
 	defer l.mu.Unlock()
 	l.records = map[string]*Record{}
 	l.order = nil
+	// 一并清掉没等到 responseReceived 的孤儿条目，否则这份暂存表会一直涨。
+	l.extraHeaders = nil
 }
 
 // Len 返回当前保留的记录条数。
@@ -153,6 +162,8 @@ func (l *Listener) Start(ctx context.Context) error {
 			l.track(func() { l.handleResponse(e) })
 		case *cdpnetwork.EventLoadingFinished:
 			l.track(func() { l.handleLoadingFinished(e) })
+		case *cdpnetwork.EventResponseReceivedExtraInfo:
+			l.track(func() { l.handleResponseExtraInfo(e) })
 		}
 	})
 

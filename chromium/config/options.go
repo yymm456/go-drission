@@ -32,6 +32,7 @@ type Options struct {
 	Headless       bool
 	WindowSize     string
 	AntiDetect     bool          // 是否启用反自动化检测（默认关）
+	InsecureTLS    bool          // 跳过 TLS 证书校验（默认关），见 WithInsecureTLS
 	DefaultTimeout time.Duration // Tab 操作的默认超时，0 表示不自动加超时
 	ConnectTimeout time.Duration
 	ExtraFlags     []FlagPair   // 自定义启动参数
@@ -123,6 +124,16 @@ func WithLang(lang string) Option {
 func WithAntiDetect(enable bool) Option {
 	return func(o *Options) {
 		o.AntiDetect = enable
+	}
+}
+
+// WithInsecureTLS 跳过 TLS 证书校验（内部实现）。
+//
+// 落到命令行是 --ignore-certificate-errors 与 --test-type 两条；
+// 为什么必须带 --test-type 见 launch.go 里的说明。
+func WithInsecureTLS() Option {
+	return func(o *Options) {
+		o.InsecureTLS = true
 	}
 }
 

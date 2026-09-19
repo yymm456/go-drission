@@ -190,6 +190,14 @@ func startServers(t *testing.T) *testServers {
 			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "abc123", Path: "/", MaxAge: 3600})
 			fmt.Fprint(w, "ok")
 
+		// 一次响应下发**两个** Set-Cookie：这是「Record.SetCookies 为什么必须是切片」
+		// 的现场 —— ResponseHeaders 是 map[string]string，同名键装不下两条，
+		// 只往 map 里合并的话这里就会只剩最后一条。
+		case "/set-two-cookies":
+			http.SetCookie(w, &http.Cookie{Name: "a", Value: "1", Path: "/", MaxAge: 3600})
+			http.SetCookie(w, &http.Cookie{Name: "b", Value: "2", Path: "/", MaxAge: 3600})
+			fmt.Fprint(w, "ok")
+
 		case "/profile":
 			c, err := r.Cookie("sid")
 			if err != nil {
@@ -880,6 +888,64 @@ func TestListener(t *testing.T) {
 	if !hit {
 		t.Fatalf("未抓到目标请求，记录数 %d", len(recs))
 	}
+}
+
+// TestListenerSetCookiesFromExtraInfo 守住「响应头必须带 Set-Cookie」。
+//
+// CDP 把 Set-Cookie 藏在 responseReceivedExtraInfo 事件里，只听 responseReceived
+// 拿不到 —— 这条用例就是那个缺口的现场。选 /set-two-cookies（一次下发两条）是为了
+// 同时验证「多值不会被 ResponseHeaders 的 map 覆盖掉只剩一条」。
+func TestListenerSetCookiesFromExtraInfo(t *testing.T) {
+	_, tab := setup(t)
+	srv := startServers(t)
+	ctx := ctxOf(t, tab, 60*time.Second)
+
+	l := tab.Listen("/set-two-cookies")
+	if err := l.Start(ctx); err != nil {
+		t.Fatalf("启动监听失败：%v", err)
+	}
+	t.Cleanup(l.Stop)
+
+	if err := tab.Navigate(ctx, srv.main.URL+"/set-two-cookies"); err != nil {
+		t.Fatalf("导航失败：%v", err)
+	}
+	if err := tab.WaitReady(ctx); err != nil {
+		t.Fatalf("等待就绪失败：%v", err)
+	}
+	l.WaitIdle()
+
+	var hit *chromium.Record
+	for _, r := range l.Records() {
+		if strings.Contains(r.URL, "/set-two-cookies") {
+			hit = r
+			break
+		}
+	}
+	if hit == nil {
+		t.Fatalf("没有抓到 /set-two-cookies 的记录（共 %d 条）：可能页面没真正发出请求", l.Len())
+	}
+
+	if len(hit.SetCookies) < 2 {
+		t.Fatalf("期望至少 2 条 Set-Cookie（a=1 / b=2），实际 %v —— "+
+			"若为空，说明 ExtraInfo 事件没有合并进来", hit.SetCookies)
+	}
+	joined := strings.Join(hit.SetCookies, "\n")
+	if !strings.Contains(joined, "a=1") || !strings.Contains(joined, "b=2") {
+		t.Fatalf("Set-Cookie 内容不符，期望含 a=1 与 b=2，实际：%v", hit.SetCookies)
+	}
+	if hit.ResponseHeaders["Set-Cookie"] == "" && !hasSetCookieKey(hit.ResponseHeaders) {
+		t.Errorf("ResponseHeaders 也应带上 Set-Cookie，实际：%v", hit.ResponseHeaders)
+	}
+}
+
+// hasSetCookieKey 大小写不敏感地找 Set-Cookie 键（HTTP 头名不区分大小写）。
+func hasSetCookieKey(h map[string]string) bool {
+	for k := range h {
+		if strings.EqualFold(k, "set-cookie") {
+			return true
+		}
+	}
+	return false
 }
 
 // TestListenerResponseBodyBackfill 守住「后台补取响应体」这条异步路径。

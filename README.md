@@ -421,6 +421,7 @@ tab.Wait().Ready().Do(ctx)
 | `WithConnectTimeout(d)` | 连接握手超时（ctx 无 deadline 时的默认值，默认 10s）                 |
 | `WithDefaultTimeout(d)` | Tab 操作的默认超时（默认 30s，传 0 关闭）；仅在调用方 ctx 无 deadline 时兜底 |
 | `WithAntiDetect(bool)` | 反自动化检测（默认关闭），见「反检测」                                 |
+| `WithInsecureTLS()` | 跳过 TLS 证书校验（默认关闭），用于自签证书的内网站点                     |
 | `WithLang(lang)` | 浏览器语言 `--lang`（默认 `zh-CN`），传空则不添加                   |
 | `WithFlag(name, value)` | 自定义 Chrome 启动参数                                     |
 | `WithLogger(l)` | 库内部日志（`*slog.Logger`）；默认静默，传入即输出连接/启动等信息            |
@@ -488,6 +489,7 @@ listener := tab.Listen("/api/").MaxRecords(200)
 | `Status` | `int64` | 响应状态码 |
 | `ResponseHeaders` | `map[string]string` | 响应头 |
 | `ResponseBody` | `string` | 响应体 |
+| `SetCookies` | `[]string` | 响应下发的全部 `Set-Cookie`（按出现顺序）；无则为 `nil` |
 
 > **注意**：`WaitIdle()` 只等待「已入队」的后台任务，不会等待未来才发生的请求。
 > 导航后应先 `WaitReady` / 适当 `Sleep`，再 `WaitIdle()`，才能抓到异步 XHR / 上报类请求。
@@ -945,8 +947,11 @@ Session 的请求方法与 Cookie 跨实例复用、反检测生效、网络监�
 
 ## 已知边界
 
-- 响应头取自 CDP `responseReceived` 事件，为初步头；完整头（含部分 `Set-Cookie`）在
-  `responseReceivedExtraInfo` 事件，当前未合并。
+- 响应头合并了 CDP `responseReceived` 与 `responseReceivedExtraInfo` 两个事件：
+  `Set-Cookie` **只出现在后者**里，所以完整响应头依赖该事件。它并非每个响应都有
+  （CDP 文档明确说明，且到达顺序不保证），因此 `Record.SetCookies` 可能为 `nil`——
+  取之前请判空，不要假设一定有。多个 `Set-Cookie` 已按出现顺序拆开存进该切片，
+  不会被 `ResponseHeaders` 的 map 覆盖成一条。
 - `Eval` 返回值按 JSON 解码：`string` / `float64` / `map[string]any` /
   `[]any` / `bool` / `nil`。
 - `Listener.Records()` 返回的是**深拷贝**：监听进行中也能安全读取，但请不要依赖
