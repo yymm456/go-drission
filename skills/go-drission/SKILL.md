@@ -1,6 +1,8 @@
 ---
 name: go-drission
 description: 在 go-drission 仓库（Go 浏览器自动化库）里干活时使用——包括调用它的 API 写脚本，以及为它本身加功能/修 bug/补测试。涵盖 Browser / Tab / Element / Frame / Selector / Wait / Listener / BrowserContext / Profile / Session / Cookie 接力的真实 API、必须遵守的 context 与生命周期约束、哨兵错误的判定方式、测试分层与 API 冻结规则。任务涉及浏览器自动化、页面抓取、免登录、Cookie 接力、网络监听、多账户隔离，或需要理解/修改本仓库代码时加载本 skill。
+version: 1.0.0
+agent_created: true
 ---
 
 # go-drission
