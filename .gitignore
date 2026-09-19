@@ -4,7 +4,8 @@
 *.dll
 *.so
 *.dylib
-go-drission
+# 前导 / 表示只匹配仓库根目录：写成裸名 go-drission 会连 skills/go-drission/ 一起忽略
+/go-drission
 chrome-automation
 
 # 测试与覆盖率
