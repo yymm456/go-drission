@@ -210,6 +210,22 @@ func startServers(t *testing.T) *testServers {
 		case "/redirect":
 			http.Redirect(w, r, "/api/get", http.StatusFound)
 
+		// 慢响应：用于验证「等待就绪」的超时语义。
+		// 先 flush 一部分 HTML 让浏览器认为导航已开始，然后挂着不返回。
+		//
+		// 等待必须是**可取消**的：httptest.Server.Close() 会等所有 handler 返回，
+		// 写死 time.Sleep 会让关服务器时白等几十秒，把用例拖垮。
+		case "/slow":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprint(w, "<!doctype html><html><head><title>slow</title></head><body>partial")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+			case <-time.After(30 * time.Second):
+			}
+
 		default:
 			http.NotFound(w, r)
 		}
