@@ -143,6 +143,10 @@ func TestCookieJSONTagsAreFrozen(t *testing.T) {
 		"Secure":   {"secure", "bool"},
 		"SameSite": {"same_site", "string"},
 		"Expires":  {"expires", "float64"},
+		// 分区 Cookie（CHIPS）：json tag 必须与 session.CookieItem 逐字一致（含 omitempty），
+		// 那是两个包接力时的唯一通道，少一个字段或改一个选项就会静默丢属性。
+		"Partitioned":  {"partitioned,omitempty", "bool"},
+		"PartitionKey": {"partition_key,omitempty", "string"},
 	}
 
 	typ := reflect.TypeFor[Cookie]()

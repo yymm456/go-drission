@@ -342,12 +342,19 @@ GO_DRISSION_STABILITY_ROUNDS=100 go test -tags smoke -run TestStability -timeout
 
 ---
 
-## 12. 已知不一致（务必注意，别照抄 godoc）
+## 12. 需要注意的不一致
 
-- **`chromium.Cookie` 与 `session.CookieItem` 的字段并不完全一致**：`session.CookieItem` 有 `Partitioned` / `PartitionKey`（CHIPS 分区 Cookie），`chromium.Cookie` **没有**这两个字段。
-  实际影响：`session → chromium` 接力时分区属性会被 JSON 反序列化静默丢弃（Go 会忽略未知字段），Cookie 仍能导入，只是退化成普通 Cookie；反方向（`chromium → session`）无影响。
-  注意 `chromium/api.go` 里 `Cookie` 的 godoc 写的是「JSON 字段与 session.CookieItem 完全一致」——**这句目前不准确**。
-- `Reload` 不等 load，与 `Navigate` / `Back` / `Forward` 不一致（见 §6）。这是有意保留的现状。
+- **`Reload` 不等 load**，与 `Navigate` / `Back` / `Forward` 不一致（见 §6 的表格）。这是有意保留的现状，改动前先确认。
+- `Navigate` / `Back` / `Forward` 判定「完成」的依据各不相同（等 load vs 等地址），见 §6。
+
+已对齐、不必再担心的：
+
+- `chromium.Cookie` 与 `session.CookieItem` 的字段**已完全对齐**（两侧均有
+  `Partitioned` / `PartitionKey`，分区 Cookie CHIPS 可无损跨包接力）。
+  两边的 json tag 逐字相同（含 `,omitempty`），由 `chromium/api_test.go` 的
+  `TestCookieJSONTagsAreFrozen` 与 `session` 侧的对应用例一起钉住 —— **改任一侧的 tag 都会让测试红**。
+  分区 Cookie 还要求 `Secure`，且 `Partitioned=true` 时必须给 `PartitionKey`（否则注入前会被
+  `ValidateCookie` 拦成 `ErrInvalidCookie`，不会静默降级成普通 Cookie）。
 
 ---
 

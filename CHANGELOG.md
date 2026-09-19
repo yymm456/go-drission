@@ -10,6 +10,20 @@
 
 ## [未发布]
 
+### 修复
+
+- **补上分区 Cookie（CHIPS）支持**：`chromium.Cookie` 此前缺少 `Partitioned` / `PartitionKey`
+  两个字段，而 `session.CookieItem` 有 —— 跨包接力时分区属性会被 JSON 静默丢弃
+  （Go 忽略未知字段），Cookie 退化成普通 Cookie 而调用方毫不知情，
+  与「两包 JSON 字段一致」的承诺不符。
+  现在两条注入路径（单个 / 批量）与读取路径都做了映射，语义为：
+  - `Partitioned=true` 且有 `PartitionKey` → 写成 CDP 的 `CookiePartitionKey`
+    （`TopLevelSite` 取 `PartitionKey` 的值，形如 `https://example.com`）；
+  - 否则**原样传 nil** —— CDP 的语义是「不设 partitionKey 即普通 Cookie」，
+    塞空结构体会把普通 Cookie 错误地变成分区 Cookie；
+  - 标记了分区却没给 key，会在注入前被 `ValidateCookie` 拦成 `ErrInvalidCookie`
+    （与 `SameSite=None` 缺 `Secure` 同类，不静默降级）。
+
 ### 新增
 
 - **`Tab.Back(ctx)` / `Tab.Forward(ctx)`**：后退 / 前进一条历史记录。

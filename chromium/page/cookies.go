@@ -128,6 +128,14 @@ func (t *Tab) GetCookies(ctx context.Context, urls ...string) ([]*network.Cookie
 	return cookies, err
 }
 
+// partitionKeySite 取分区 key 里的顶层站点；nil 返回空串。
+func partitionKeySite(pk *network.CookiePartitionKey) string {
+	if pk == nil {
+		return ""
+	}
+	return pk.TopLevelSite
+}
+
 // Cookies 返回当前隔离上下文内的全部 Cookie（转为可序列化的 Cookie 结构）。
 func (t *Tab) Cookies(ctx context.Context, urls ...string) ([]cookie.Cookie, error) {
 	raw, err := t.GetCookies(ctx, urls...)
@@ -145,6 +153,11 @@ func (t *Tab) Cookies(ctx context.Context, urls ...string) ([]cookie.Cookie, err
 			Secure:   c.Secure,
 			SameSite: string(c.SameSite),
 			Expires:  c.Expires,
+			// 读回时 CDP 用 PartitionKey != nil 表示「这是分区 Cookie」；
+			// PartitionKeyOpaque 表示 key 不可序列化，这种取不到 TopLevelSite，
+			// 仍标记为分区但 key 留空，交给 ValidateCookie 在回注时明确报错。
+			Partitioned:  c.PartitionKey != nil || c.PartitionKeyOpaque,
+			PartitionKey: partitionKeySite(c.PartitionKey),
 		})
 	}
 	return out, nil

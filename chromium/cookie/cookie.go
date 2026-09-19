@@ -29,6 +29,16 @@ type Cookie struct {
 	Secure   bool    `json:"secure"`
 	SameSite string  `json:"same_site"`
 	Expires  float64 `json:"expires"`
+
+	// Partitioned / PartitionKey 对应 CHIPS（Cookies Having Independent Partitioned State）
+	// 分区 Cookie，json tag 与 session.CookieItem 逐字一致 —— 那是两个包接力时的唯一通道，
+	// 任何一边少一个字段，导出的 JSON 再导入时该属性就会被静默丢掉（Go 会忽略未知字段），
+	// Cookie 退化成普通 Cookie 而调用方毫不知情。
+	//
+	// PartitionKey 是写入时顶层站点的 site（形如 "https://example.com"），对应 CDP 的
+	// CookiePartitionKey.TopLevelSite。
+	Partitioned  bool   `json:"partitioned,omitempty"`
+	PartitionKey string `json:"partition_key,omitempty"`
 }
 
 // CookieSource 是「能导出自己的 Cookie JSON」的类型。
@@ -55,7 +65,8 @@ func ParseCookiesJSON(data []byte) ([]Cookie, error) {
 // ValidateCookie 在发起 CDP 调用之前拦住不完整的 Cookie。
 //
 // CDP 对缺字段只回一句 "Invalid cookie fields"，看不出是哪一条、缺了哪个字段，批量注入时尤其难查。
-// 三项检查与 errs 中 ErrInvalidCookie 一一对应：缺 name、缺 domain、SameSite=None 却没有 Secure。
+// 四项检查与 errs 中 ErrInvalidCookie 一一对应：缺 name、缺 domain、
+// SameSite=None 却没有 Secure、标记分区却没有 PartitionKey。
 func ValidateCookie(c Cookie, idx int) error {
 	if strings.TrimSpace(c.Name) == "" {
 		return fmt.Errorf("%w: 第 %d 条缺少 name", errs.ErrInvalidCookie, idx)
@@ -70,7 +81,23 @@ func ValidateCookie(c Cookie, idx int) error {
 		return fmt.Errorf("%w: Cookie %q 的 SameSite=None 必须带 Secure（浏览器会拒收）",
 			errs.ErrInvalidCookie, c.Name)
 	}
+	// 同理：分区标记了但没给 key，CDP 会当普通 Cookie 收下 —— 语义变了却不报错，必须拦。
+	if c.Partitioned && strings.TrimSpace(c.PartitionKey) == "" {
+		return fmt.Errorf("%w: Cookie %q 标记为分区（Partitioned）但缺少 PartitionKey（形如 \"https://example.com\"）",
+			errs.ErrInvalidCookie, c.Name)
+	}
 	return nil
+}
+
+// cookiePartitionKey 把分区信息转成 CDP 的 CookiePartitionKey；非分区 Cookie 返回 nil。
+//
+// 必须原样返回 nil：CDP 的语义是「不设 partitionKey 即为普通 Cookie」，
+// 给非分区 Cookie 塞一个空结构体会把它错误地变成分区 Cookie。
+func cookiePartitionKey(c Cookie) *network.CookiePartitionKey {
+	if !c.Partitioned || c.PartitionKey == "" {
+		return nil
+	}
+	return &network.CookiePartitionKey{TopLevelSite: c.PartitionKey}
 }
 
 // cookiePath 返回注入用的 Cookie path，缺省为 "/"（与浏览器默认一致）。
@@ -110,6 +137,10 @@ func SetCookieParams(c Cookie) *network.SetCookieParams {
 	if exp := cookieExpires(c); exp != nil {
 		p = p.WithExpires(exp)
 	}
+	// 该字段没有 WithXxx builder，直接赋值。
+	if pk := cookiePartitionKey(c); pk != nil {
+		p.PartitionKey = pk
+	}
 	return p
 }
 
@@ -130,5 +161,6 @@ func CookieParam(c Cookie) *network.CookieParam {
 	if c.SameSite != "" {
 		p.SameSite = network.CookieSameSite(c.SameSite)
 	}
+	p.PartitionKey = cookiePartitionKey(c)
 	return p
 }
