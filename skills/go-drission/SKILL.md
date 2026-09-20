@@ -336,6 +336,20 @@ GO_DRISSION_STABILITY_ROUNDS=100 go test -tags smoke -run TestStability -timeout
 - 改完跑 `gofmt` / `go vet` / `go test -race`，涉及浏览器行为的补 smoke 用例。
 
 **DON'T**
+- **不要使用 Go 1.26 才引入的新语法糖，典型是 `new(expr)`**（1.26 起 `new` 可以接表达式）。
+  取指针一律拆成两步写：
+
+  ```go
+  // ✅ 这样写
+  exp := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
+  return &exp
+
+  // ❌ 不要这样写（虽然是 1.26 的合法语法，但会让版本门槛"看起来"更高）
+  return new(cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0)))
+  ```
+
+  原因：本项目要保持**保守的源码风格** —— `go.mod` 里的 `go 1.26.0` 是下限声明，
+  不代表鼓励使用最新语法。而且 IDE 的 Go 版本若配在 1.26 以下，这类语法会被标红。
 - **不要发明 API**。不确定某个方法是否存在，就去源码里 grep；本仓库没有 `Tab.WaitLoad()`、没有 Python DrissionPage 的 `ele()`、也没有 `Browser.Back()`（`Back` 在 `Tab` 上）。
 - **不要绕过本库直接用 chromedp**。需要新 CDP 能力时，加到 `page`/`browser` 层并走 `Tab.run`，不要在业务代码里 `chromedp.Run(tab.Ctx, ...)`（会丢掉本库的 ctx 校正与默认超时）。
 - **不要缓存 DOM 节点**。`Element` 就是不缓存节点的设计，需要反复操作就复用 `*Element`（它每次重新查），不要自己去拿 nodeID 存着。
