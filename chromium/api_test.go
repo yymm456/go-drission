@@ -233,10 +233,11 @@ func TestRecordFieldsAreFrozen(t *testing.T) {
 //
 // 表里的签名逐字取自 API 基线（.workbuddy/分析情况/api-baseline.sig.txt）。
 
-// Tab 的 37 个导出方法签名。
+// Tab 的 38 个导出方法签名。
 var (
 	_ func(*Tab, context.Context) error                                    = (*Tab).Back
 	_ func(*Tab, context.Context) error                                    = (*Tab).BringToFront
+	_ func(*Tab)                                                           = (*Tab).Close
 	_ func(*Tab, context.Context, ...string) ([]Cookie, error)             = (*Tab).Cookies
 	_ func(*Tab, context.Context) (string, error)                          = (*Tab).CurrentURL
 	_ func(*Tab, Selector) *Element                                        = (*Tab).Ele

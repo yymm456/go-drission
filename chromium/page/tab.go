@@ -466,3 +466,31 @@ func (t *Tab) navigateHistory(ctx context.Context, offset int64) error {
 		})
 	}))
 }
+
+// Close 关闭该标签页。
+//
+// 不必先拿到 Browser：关掉 Chrome 里的 target 之后，Browser 台账里的那条登记会在
+// 下一次 Tabs() / LatestTab() / GetTab() 时被自动清掉 —— syncTabs 发现某个 target
+// 已不在实时快照里，就会调 ReleaseTab 并把它从 b.tabs 摘掉（见 browser/targets.go）。
+// 这里不等那次同步，主动 ReleaseTab 一次，免得 chromedp 会话白挂一段时间。
+//
+// 与 Browser.Close / BrowserContext.Close 一致，不收 ctx 也不返回错误：关闭是收尾动作，
+// 内部自带超时保护（与 Browser.CloseTab 同一个 cdpkit.DefaultCallTimeout），
+// Chrome 无响应也不该把调用方挂住。重复调用安全。
+//
+// 注意：关闭窗口里的第一个标签页可能连同窗口一起关掉，这与 BrowserContext.CloseTab
+// 记录的行为一致；标签页关掉后它上面的操作会因 ctx 已取消而报错。
+func (t *Tab) Close() {
+	if t.Ctx == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.Ctx, cdpkit.DefaultCallTimeout)
+	defer cancel()
+
+	// 顺序不能颠倒：先发命令，再释放会话。ReleaseTab 会 cancel t.Ctx，
+	// 反过来做的话命令拿到的是已取消的上下文，压根发不出去。
+	_ = t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		return target.CloseTarget(t.ID).Do(c)
+	}))
+	ReleaseTab(t)
+}

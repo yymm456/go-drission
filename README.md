@@ -381,6 +381,7 @@ tab.Wait().Ready().Do(ctx)
 
 | 方法 | 说明 |
 |---|---|
+| `Close()` | 关闭本标签页（含它在 Browser 台账里的登记）。不必先拿到 Browser，重复调用安全 |
 | `BringToFront(ctx) error` | 标签页激活置前（后台窗口节流会丢输入，交互前先调用） |
 | `WindowID(ctx) (int64, error)` | 标签页所属 OS 窗口编号（同窗口多标签验证） |
 | `SetTimeout(d)` | 调整该标签页的内置默认超时；只对「调用方未设 deadline」的调用生效，传 0 关闭 |

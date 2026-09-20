@@ -35,7 +35,7 @@ smoke/           端到端测试（//go:build smoke，依赖真实 Chrome）
 | 类型 | 是什么 | 关键约束 |
 |---|---|---|
 | `Browser` | 一个 Chrome 进程 + 一条共享的 chromedp 连接 | `Close()` 会杀进程树并释放数据目录锁 |
-| `Tab` | 一个被托管的标签页（= 一个 CDP target） | **`Tab.Ctx` 承载 target 路由**，所有操作都要用它派生 ctx |
+| `Tab` | 一个被托管的标签页（= 一个 CDP target） | **`Tab.Ctx` 承载 target 路由**，所有操作都要用它派生 ctx；`Close()` 自带兜底超时 |
 | `Element` | **定位器，不是 DOM 节点** | 只存选择器，每次操作都重新查询（源：`page/element.go` 类型注释） |
 | `FrameElement` | iframe 内的元素，镜像 `Element` | 走 JS 求值（不经 CDP DOM 域），**故没有 `SendKeys` / `Attribute` / `Eval` / `WaitVisible`** |
 | `Frame` | 页面内一个 iframe | 建在 isolated world 里，跨域 iframe 也能读写；导航后失效（`ErrFrameDetached`） |
@@ -118,6 +118,19 @@ t2, _ := b.NewTab(ctx)          // 同窗口/同 Cookie 会话，只是另一个
 bc, _ := b.Context(ctx, "acct2") // 隔离上下文：独立 Cookie/存储，可并行多账户
 t3, _ := bc.NewTab(ctx)
 ```
+
+**关闭标签页**：用 `tab.Close()`，不必先拿到 `Browser`。
+
+```go
+tab, err := b.NewTab(ctx)
+if err != nil { return err }
+defer tab.Close()              // 谁创建、谁关闭，和作用域对齐
+```
+
+它与 `Browser.CloseTab(ctx, tab)` 是同一件事（同一条 CDP 命令 `Target.closeTarget`、
+同样 `ReleaseTab`），区别只是不收 ctx。关闭后标签页在 Browser 台账里的登记会在下一次
+`Tabs()` / `LatestTab()` / `GetTab()` 时被自动摘掉（`syncTabs` 发现 target 已消失就会释放并移除，
+源：`browser/targets.go`）。重复调用安全；关掉窗口里的**第一个**标签页可能连同窗口一起关掉。
 
 ---
 

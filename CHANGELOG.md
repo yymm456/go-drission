@@ -10,6 +10,15 @@
 
 ## [未发布]
 
+### 新增
+
+- **`Tab.Close()`**：关闭标签页不必先拿到 `Browser`。与 `Browser.CloseTab(ctx, tab)`
+  是同一件事（同一条 CDP 命令 `Target.closeTarget` + `ReleaseTab`），区别只是不收 ctx、
+  不返回错误 —— 与 `Browser.Close` / `BrowserContext.Close` 保持一致。
+  关闭后它在 Browser 台账里的登记会在下一次 `Tabs()` / `LatestTab()` / `GetTab()` 时
+  被自动摘掉（`syncTabs` 发现 target 已消失就会释放并移除）。重复调用安全。
+  注意：关掉窗口里的第一个标签页可能连同窗口一起关掉。
+
 ### 修复
 
 - **补上分区 Cookie（CHIPS）支持**：`chromium.Cookie` 此前缺少 `Partitioned` / `PartitionKey`
