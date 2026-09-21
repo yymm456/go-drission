@@ -8,6 +8,28 @@
 
 ---
 
+## [未发布]
+
+### 新增
+
+- **`Tab.Activate(ctx)`**：激活并聚焦该 target（封装 `Target.activateTarget`）。
+  与既有的 `BringToFront`（`Page.bringToFront`，"activates tab"）相比多一层聚焦 ——
+  实测（非 headless）能把最小化的窗口恢复出来。两者都不保证把窗口顶到其它应用之上
+  （那是 OS 级能力，CDP 没有）。
+- **`Tab.SetWindowState(ctx, state)`**：设置所属窗口状态（封装 `Browser.setWindowBounds`
+  的 windowState 维度），取值 `normal` / `minimized` / `maximized` / `fullscreen`。
+  只暴露状态这一个维度，不把上游 `Bounds` 类型透出去。
+- `ErrInvalidWindowState` 哨兵错误：非法状态值在发起 CDP 前就被拦下
+  （否则 Chrome 只回一句 "Invalid window bounds"，看不出哪个值错了）。
+
+### 已知边界
+
+- Chrome 不允许从 `minimized` 直接切 `maximized` / `fullscreen`，必须先恢复 `normal`
+  （实测报错 "To maximize a minimized or fullscreen window, restore it to normal state first."）。
+  调用方需要自己按 `normal` 打底的顺序走。
+- headless 下这两个 API 都能调用（Chrome 会给实例一个虚拟窗口，`WindowID` 返回非 0），
+  但 `visibilityState` / `hasFocus` 的变化只有在带窗口的实例上才看得到。
+
 ## [0.4.0] - 2026-09-20
 
 ### 新增

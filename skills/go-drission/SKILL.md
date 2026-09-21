@@ -132,6 +132,27 @@ defer tab.Close()              // 谁创建、谁关闭，和作用域对齐
 `Tabs()` / `LatestTab()` / `GetTab()` 时被自动摘掉（`syncTabs` 发现 target 已消失就会释放并移除，
 源：`browser/targets.go`）。重复调用安全；关掉窗口里的**第一个**标签页可能连同窗口一起关掉。
 
+**切换 / 激活标签页** —— 两个层级，别混：
+
+```go
+tab.BringToFront(ctx)             // 标签页级：在该窗口内置前（Page.bringToFront）
+tab.Activate(ctx)                 // target 级：激活并聚焦（Target.activateTarget），更强
+tab.SetWindowState(ctx, "normal") // 窗口级：normal / minimized / maximized / fullscreen
+```
+
+实测（非 headless，`D:\tmp\bfprobe2`）判据用 `document.visibilityState` + `document.hasFocus()`：
+
+- `BringToFront` 后：目标 `visible` + `hasFocus=true`，另一个变 `hidden`
+- `Activate` 后：`hasFocus=true`；**且能把最小化的窗口恢复出来**（实测最小化 → `Activate` → 回到 `visible`+`focus`）
+
+⚠️ 两个坑：
+1. `BringToFront` / `Activate` 都**不保证把窗口顶到其它应用之上** —— 那是 OS 级能力，CDP 没有。
+2. Chrome **不允许从 minimized 直接切 maximized / fullscreen**，必须先回 `normal`
+   （否则报 `To maximize a minimized or fullscreen window, restore it to normal state first.`）。
+   状态序列要按 `normal → minimized → normal → maximized` 这样走。
+
+`SetWindowState` 的非法值在发起 CDP 前就被拦成 `ErrInvalidWindowState`（只收小写四个值）。
+
 ---
 
 ## 4. 网络监听

@@ -111,6 +111,10 @@ var (
 	// ErrNoHistoryEntry 表示已经到达历史记录边界（没有更早或更晚的一条可去）。
 	// Back / Forward 在越界时返回它，页面保持原样。用 errors.Is 判断。
 	ErrNoHistoryEntry = errs.ErrNoHistoryEntry
+
+	// ErrInvalidWindowState 表示 SetWindowState 的窗口状态不是
+	// normal / minimized / maximized / fullscreen 之一。
+	ErrInvalidWindowState = errs.ErrInvalidWindowState
 )
 
 // WithChromePath 指定浏览器可执行文件路径（支持 Chrome / Edge / Brave / Chromium）。

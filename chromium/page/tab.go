@@ -306,6 +306,52 @@ func (t *Tab) WindowID(ctx context.Context) (int64, error) {
 	return wid, err
 }
 
+// Activate 激活（聚焦）该标签页所在的 target。
+//
+// 与 BringToFront 的区别：BringToFront 走 Page.bringToFront，CDP 原文是
+// "brings page to front (activates tab)" —— 在该标签页所属窗口内置前；
+// Activate 走 Target.activateTarget，原文是 "activates (focuses) the target"，
+// 多一层聚焦，更接近真实用户点了一下这个标签页。
+//
+// 两者都作用于「标签页所在窗口内部」：窗口若被最小化或被其它应用遮挡，
+// 需要先用 SetWindowState(ctx, "normal") 把窗口恢复出来。
+// activateTarget 是 browser 级命令，需切到 browser 级连接执行（同 WindowID）。
+func (t *Tab) Activate(ctx context.Context) error {
+	return t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		return target.ActivateTarget(t.ID).Do(bexec)
+	}))
+}
+
+// SetWindowState 设置该标签页所属 OS 窗口的状态（Browser.setWindowBounds）。
+//
+// state 只能是 "normal" / "minimized" / "maximized" / "fullscreen" 之一，
+// 其它值在发起 CDP 调用前就被拦成 ErrInvalidWindowState —— 让 Chrome 去报错会得到
+// 一句看不出哪里错的 "Invalid window bounds"，和 Cookie 校验同一个道理。
+//
+// 常见用法：窗口被最小化时先 SetWindowState(ctx, "normal") 把它恢复出来，
+// 再 BringToFront / Activate 切换标签页。
+// 注意它只改窗口状态，**不保证把窗口顶到其它应用之上**（那需要 OS 级能力，CDP 没有）。
+func (t *Tab) SetWindowState(ctx context.Context, state string) error {
+	switch state {
+	case "normal", "minimized", "maximized", "fullscreen":
+	default:
+		return fmt.Errorf("%w: 窗口状态 %q 非法（只能是 normal / minimized / maximized / fullscreen）",
+			errs.ErrInvalidWindowState, state)
+	}
+
+	wid, err := t.WindowID(ctx)
+	if err != nil {
+		return err
+	}
+	return t.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		bexec := cdp.WithExecutor(c, chromedp.FromContext(c).Browser)
+		return browser.SetWindowBounds(browser.WindowID(wid), &browser.Bounds{
+			WindowState: browser.WindowState(state),
+		}).Do(bexec)
+	}))
+}
+
 // ---------- 节点级操作（ClickJS / SetValue 的公共基础）----------
 
 func (t *Tab) nodes(ctx context.Context, sel Selector) ([]*cdp.Node, error) {

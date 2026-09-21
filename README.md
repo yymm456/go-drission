@@ -383,7 +383,9 @@ tab.Wait().Ready().Do(ctx)
 |---|---|
 | `Close()` | 关闭本标签页（含它在 Browser 台账里的登记）。不必先拿到 Browser，重复调用安全 |
 | `BringToFront(ctx) error` | 标签页激活置前（后台窗口节流会丢输入，交互前先调用） |
+| `Activate(ctx) error` | 激活**并聚焦**该 target（`Target.activateTarget`）。比 `BringToFront` 多一层聚焦；实测（非 headless）能把最小化的窗口恢复出来 |
 | `WindowID(ctx) (int64, error)` | 标签页所属 OS 窗口编号（同窗口多标签验证） |
+| `SetWindowState(ctx, state) error` | 设置所属窗口状态：`normal` / `minimized` / `maximized` / `fullscreen`。非法值报 `ErrInvalidWindowState`。⚠️ Chrome 不允许从 minimized 直接切 maximized / fullscreen，要先回 `normal` |
 | `SetTimeout(d)` | 调整该标签页的内置默认超时；只对「调用方未设 deadline」的调用生效，传 0 关闭 |
 | `Listen(pattern) *Listener` | 网络监听，见「网络监听 Listener」 |
 

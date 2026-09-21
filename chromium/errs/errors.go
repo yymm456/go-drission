@@ -79,6 +79,12 @@ var (
 	// ErrEmptyURL 表示传入的地址为空或缺少协议头 / 主机名。
 	ErrEmptyURL = errors.New("chromium: 地址为空或格式非法")
 
+	// ErrInvalidWindowState 表示 SetWindowState 传入的窗口状态不是
+	// normal / minimized / maximized / fullscreen 之一。
+	//
+	// 不在 CDP 层拦的话，Chrome 只回一句 "Invalid window bounds"，看不出是哪个值错了。
+	ErrInvalidWindowState = errors.New("chromium: 窗口状态非法")
+
 	// ErrNoHistoryEntry 表示已经到达历史记录的边界：没有更早或更晚的一条可去。
 	//
 	// 到达边界时**页面保持原样** —— 既不跳转，也不把这件事吞掉。
