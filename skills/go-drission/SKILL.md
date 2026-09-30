@@ -14,6 +14,8 @@ Go 的浏览器自动化库：**用 `chromium` 包驱动真实 Chrome（走 CDP�
 ```
 chromium/        门面（api.go 只有类型别名 + 转发函数，实现 0 行）
 ├── browser/     Browser / BrowserContext / target 同步
+│                 browser.go=生命周期  browser_tabs.go=标签页增删改查
+│                 browser_conn.go=连接与超时预算  targets.go=target 同步
 ├── page/        Tab / Element / Frame / FrameElement / Selector / WaitBuilder
 ├── chrome/      Chrome 进程、端口探测、数据目录、排他锁、可执行文件查找
 ├── network/     Listener / Record / 事件处理
@@ -451,7 +453,10 @@ GO_DRISSION_STABILITY_ROUNDS=100 go test -tags smoke -run TestStability -timeout
 | 选择器如何变成 CDP 调用 | `chromium/page/selector.go` |
 | 等待条件的实现与错误分诊 | `chromium/page/wait.go` |
 | Cookie 校验规则与 CDP 参数映射 | `chromium/cookie/cookie.go` |
-| Browser 生命周期、锁序、target 同步 | `chromium/browser/browser.go`、`targets.go` |
+| Browser 生命周期（构造/连接/关闭/OpenPage） | `chromium/browser/browser.go` |
+| 标签页增删改查（NewTab/Tabs/GetTab/CloseTab） | `chromium/browser/browser_tabs.go` |
+| browser 级连接与超时预算（boundedRootCtx 等） | `chromium/browser/browser_conn.go` |
+| target 列表同步（syncTabs 的兜底逻辑） | `chromium/browser/targets.go` |
 | 隔离上下文 | `chromium/browser/context.go` |
 | 档案与排他锁 | `chromium/profile/profile.go`、`chromium/chrome/lock_*.go` |
 | 监听与 Record | `chromium/network/listener.go`、`events.go`、`record.go` |

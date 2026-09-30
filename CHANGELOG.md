@@ -19,6 +19,13 @@
 - **`Tab.SetWindowState(ctx, state)`**：设置所属窗口状态（封装 `Browser.setWindowBounds`
   的 windowState 维度），取值 `normal` / `minimized` / `maximized` / `fullscreen`。
   只暴露状态这一个维度，不把上游 `Bounds` 类型透出去。
+### 变更（内部结构，对外 API 不变）
+
+- **`chromium/browser/browser.go` 拆成三个文件**（703 行 → 395 行）：
+  `browser.go`（生命周期）/ `browser_tabs.go`（标签页增删改查）/
+  `browser_conn.go`（browser 级连接与超时预算）。同包内拆文件，不拆包，
+  导出 API 一个字没变。
+
 - **`WithWindowState(state)` 启动选项**：让浏览器一启动就是最大化 / 最小化 / 全屏 / 正常，
   不必拿到 tab 后再调 `Tab.SetWindowState`。不传则沿用 Chrome 默认（普通窗口）。
   取值非法会在 `OpenPage` 阶段直接返回 `ErrInvalidWindowState`（配置错误早暴露）。
