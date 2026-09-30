@@ -12,6 +12,7 @@ package smoke
 // 才看得到的效果，不在 smoke 里断言（它们的实测数据写在方法注释与 README 里）。
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -83,5 +84,50 @@ func TestSetWindowStateInvalid(t *testing.T) {
 		if !errors.Is(err, chromium.ErrInvalidWindowState) {
 			t.Errorf("SetWindowState(%q) 应报 ErrInvalidWindowState，实际：%v", bad, err)
 		}
+	}
+}
+
+// TestOpenPageWithWindowState 启动选项：窗口状态在 OpenPage 返回前就应用好，
+// 不必调用方拿到 tab 后再自己调 SetWindowState。
+//
+// headless 下 Chrome 会给实例一个虚拟窗口，setWindowBounds 依然返回成功，
+// 所以这里用 smoke 默认的 headless 实例即可（与 Tab.SetWindowState 的用例同理）。
+func TestOpenPageWithWindowState(t *testing.T) {
+	for _, s := range []string{"maximized", "minimized", "normal"} {
+		b, tab, err := chromium.OpenPage(context.Background(), nextFreePort(),
+			chromium.WithUserDataDir(t.TempDir()),
+			chromium.WithHeadless(true),
+			chromium.WithWindowState(s),
+			chromium.WithConnectTimeout(30*time.Second),
+			chromium.WithFlag("no-proxy-server", ""),
+		)
+		if err != nil {
+			if errors.Is(err, chromium.ErrChromeNotFound) {
+				t.Skipf("本机没有可用浏览器，跳过：%v", err)
+			}
+			t.Fatalf("WithWindowState(%q) 打开浏览器失败：%v", s, err)
+		}
+		if tab == nil {
+			t.Errorf("WithWindowState(%q) 返回的标签页为 nil", s)
+		}
+		b.Close()
+	}
+}
+
+// TestOpenPageWithInvalidWindowState 取值非法必须在 OpenPage 阶段就报错，
+// 而不是静默忽略 —— 否则调用方会以为设了却没生效。
+func TestOpenPageWithInvalidWindowState(t *testing.T) {
+	b, _, err := chromium.OpenPage(context.Background(), nextFreePort(),
+		chromium.WithUserDataDir(t.TempDir()),
+		chromium.WithHeadless(true),
+		chromium.WithWindowState("bogus"),
+		chromium.WithConnectTimeout(30*time.Second),
+		chromium.WithFlag("no-proxy-server", ""),
+	)
+	if !errors.Is(err, chromium.ErrInvalidWindowState) {
+		t.Errorf("非法窗口状态应报 ErrInvalidWindowState，实际：%v", err)
+	}
+	if b != nil {
+		b.Close()
 	}
 }

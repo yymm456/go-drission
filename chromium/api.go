@@ -170,6 +170,10 @@ func WithDefaultTimeout(d time.Duration) Option { return config.WithDefaultTimeo
 // WithWindowSize 指定窗口大小，例如 "1920,1080"
 func WithWindowSize(size string) Option { return config.WithWindowSize(size) }
 
+// WithWindowState 指定浏览器启动后的窗口状态：normal / minimized / maximized / fullscreen。
+// 不传则沿用 Chrome 默认（普通窗口）。运行中要改请用 Tab.SetWindowState。
+func WithWindowState(state string) Option { return config.WithWindowState(state) }
+
 // WithConnectTimeout 设置连接 Chrome 的超时时间
 func WithConnectTimeout(d time.Duration) Option { return config.WithConnectTimeout(d) }
 

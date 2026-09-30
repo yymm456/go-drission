@@ -19,6 +19,9 @@
 - **`Tab.SetWindowState(ctx, state)`**：设置所属窗口状态（封装 `Browser.setWindowBounds`
   的 windowState 维度），取值 `normal` / `minimized` / `maximized` / `fullscreen`。
   只暴露状态这一个维度，不把上游 `Bounds` 类型透出去。
+- **`WithWindowState(state)` 启动选项**：让浏览器一启动就是最大化 / 最小化 / 全屏 / 正常，
+  不必拿到 tab 后再调 `Tab.SetWindowState`。不传则沿用 Chrome 默认（普通窗口）。
+  取值非法会在 `OpenPage` 阶段直接返回 `ErrInvalidWindowState`（配置错误早暴露）。
 - `ErrInvalidWindowState` 哨兵错误：非法状态值在发起 CDP 前就被拦下
   （否则 Chrome 只回一句 "Invalid window bounds"，看不出哪个值错了）。
 

@@ -153,6 +153,16 @@ tab.SetWindowState(ctx, "normal") // 窗口级：normal / minimized / maximized 
 
 `SetWindowState` 的非法值在发起 CDP 前就被拦成 `ErrInvalidWindowState`（只收小写四个值）。
 
+**启动时就想要某个窗口状态** → 用启动选项 `chromium.WithWindowState(state)`（取值同上），
+`OpenPage` 在返回前就会应用好，不必拿到 tab 后再自己调。不传就是 Chrome 默认（普通窗口）。
+内部会补一次 `Activate` —— 实测 `setWindowBounds` 会让窗口失去焦点（不设时页面 visible，
+设了反而 hidden），不补的话调用方会以为「最大化没生效」；最小化除外，那等于撤销调用方意图。
+
+⚠️ **`fullscreen` 不保证真全屏**：实测 CDP 的 `setWindowBounds` 只能把它推到接近最大化
+（窗口 1707x960，而屏幕可用 1707x920），不是真正的全屏 —— 真全屏 Chrome 通常要求用户手势。
+要真全屏就自己加启动参数：`chromium.WithFlag("start-fullscreen", "")`。
+`maximized` 与 `minimized` 是实测确认生效的。
+
 ---
 
 ## 4. 网络监听

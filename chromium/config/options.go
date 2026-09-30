@@ -31,6 +31,9 @@ type Options struct {
 	Lang           string // --lang，影响 Accept-Language 与 navigator.language
 	Headless       bool
 	WindowSize     string
+	// WindowState 是浏览器启动后要设置的窗口状态：normal / minimized / maximized / fullscreen。
+	// 空串表示不干预，沿用 Chrome 自己的默认（普通窗口）—— 所以不设就是默认行为。
+	WindowState    string
 	AntiDetect     bool          // 是否启用反自动化检测（默认关）
 	InsecureTLS    bool          // 跳过 TLS 证书校验（默认关），见 WithInsecureTLS
 	DefaultTimeout time.Duration // Tab 操作的默认超时，0 表示不自动加超时
@@ -151,6 +154,19 @@ func WithDefaultTimeout(d time.Duration) Option {
 func WithWindowSize(size string) Option {
 	return func(o *Options) {
 		o.WindowSize = size
+	}
+}
+
+// WithWindowState 指定浏览器启动后的窗口状态（内部实现）。
+//
+// state 取值与 Tab.SetWindowState 相同：normal / minimized / maximized / fullscreen；
+// 空串表示不干预（Chrome 默认）。取值非法会在 OpenPage 阶段直接返回 ErrInvalidWindowState
+// —— 配置错误早暴露，免得调用方以为设了却没生效。
+//
+// 它只管「启动时」；运行中要改请用 Tab.SetWindowState。
+func WithWindowState(state string) Option {
+	return func(o *Options) {
+		o.WindowState = state
 	}
 }
 

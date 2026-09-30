@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -650,6 +651,28 @@ func OpenPage(ctx context.Context, port int, opts ...config.Option) (*Browser, *
 	// 复用来的标签页未经 NewTab，这里补注入；ensureAntiDetect 幂等，已注入的不会重复执行
 	if err := page.InjectAntiDetect(tab.Ctx, tab, b.opts); err != nil {
 		b.opts.Logger.Warn("注入反检测脚本失败", "tab", tab.ID, "err", err)
+	}
+
+	// 启动窗口状态。取值非法属于调用方的配置错误，直接返回；
+	// 环境导致的 CDP 失败只告警 —— 窗口状态不该阻断浏览器启动。
+	if ws := b.opts.WindowState; ws != "" {
+		if err := tab.SetWindowState(tab.Ctx, ws); err != nil {
+			if errors.Is(err, errs.ErrInvalidWindowState) {
+				b.Close()
+				return nil, nil, err
+			}
+			b.opts.Logger.Warn("设置启动窗口状态失败", "state", ws, "err", err)
+		}
+
+		// SetWindowBounds 会让窗口失去焦点：实测不设窗口状态时页面是 visible，
+		// 设了反而变成 hidden —— 调用方便会以为「最大化没生效」（窗口其实已经铺满，
+		// 只是不在前台）。所以除最小化外补一次 Activate 把它拉回前台。
+		// 最小化当然不能再激活，那等于立刻撤销调用方的意图。
+		if ws != "minimized" {
+			if err := tab.Activate(tab.Ctx); err != nil {
+				b.opts.Logger.Warn("设置窗口状态后激活窗口失败", "state", ws, "err", err)
+			}
+		}
 	}
 
 	return b, tab, nil

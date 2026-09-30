@@ -423,6 +423,8 @@ tab.Wait().Ready().Do(ctx)
 | `WithProxy(proxy)` | 代理，如 `http://127.0.0.1:7890`                        |
 | `WithHeadless(bool)` | 无头模式                                                |
 | `WithWindowSize(size)` | 窗口大小，如 `1920,1080`                                  |
+| `WithWindowState(state)` | 启动后的窗口状态：`normal` / `minimized` / `maximized` / `fullscreen`；不传则用 Chrome 默认 |
+                                  |
 | `WithConnectTimeout(d)` | 连接握手超时（ctx 无 deadline 时的默认值，默认 10s）                 |
 | `WithDefaultTimeout(d)` | Tab 操作的默认超时（默认 30s，传 0 关闭）；仅在调用方 ctx 无 deadline 时兜底 |
 | `WithAntiDetect(bool)` | 反自动化检测（默认关闭），见「反检测」                                 |
